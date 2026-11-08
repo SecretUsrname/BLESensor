@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLock Digital Twin</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1d232b; --muted: #66707c; --line: #dde1e6;
+    --gear: #d9a514; --gear-edge: #8a6a09; --pinion: #b8860b; --hub: #e07b24; --lug: #c4581b;
+    --push: #d33; --ghost: #7c8794; --steel: #9aa6b2; --door: #c9b38f; --frame: #8b7355;
+    --ok: #1f9d55; --warn: #c27c0e; --bad: #d33; --accent: #2f6fde; --chip: #eef1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12161b; --panel: #1a2027; --ink: #e6ebf0; --muted: #94a0ad; --line: #2b333d;
+      --gear: #c79a1c; --gear-edge: #f0c64a; --pinion: #a87d12; --hub: #e0873a; --lug: #f0a060;
+      --ghost: #7c8794; --steel: #6f7c89; --door: #6d5d44; --frame: #4f4130; --chip: #232a33;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .chip { padding: 3px 10px; border-radius: 999px; background: var(--chip); color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+  .badge { padding: 4px 12px; border-radius: 8px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; font-size: 13px; color: #fff; background: var(--muted); }
+  .badge.locked { background: var(--ok); } .badge.unlocked { background: var(--accent); }
+  .badge.jammed, .badge.uncalibrated { background: var(--bad); } .badge.moving { background: var(--warn); }
+  main { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 14px; padding: 14px 16px; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 10px; font-weight: 650; }
+  svg { width: 100%; height: auto; display: block; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+  button { font: inherit; padding: 6px 11px; border-radius: 7px; border: 1px solid var(--line); background: var(--chip); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  input[type=range] { flex: 1; min-width: 120px; }
+  select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; }
+  .kv span:nth-child(odd) { color: var(--muted); }
+  .bar { height: 8px; background: var(--chip); border-radius: 4px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); transition: width .1s; }
+  .label { color: var(--muted); font-size: 12.5px; min-width: 92px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+  #log { font: 12.5px/1.45 ui-monospace, Consolas, monospace; max-height: 300px; overflow: auto; }
+  #log div { padding: 1px 0; border-bottom: 1px dashed var(--line); }
+  #log .t { color: var(--muted); margin-right: 6px; }
+  #log .auto, #log .arm { color: var(--ok); font-weight: 600; } #log .scenario { color: var(--accent); }
+  #log .ble { color: var(--warn); }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 7px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .note { font-size: 12.5px; color: var(--muted); margin: 4px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SLock digital twin</h1>
+  <span id="badge" class="badge">…</span>
+  <span class="chip" id="simtime">t = 0 s</span>
+  <span class="chip" id="blechip">bluetooth: …</span>
+  <span class="chip" id="modechip">mode</span>
+</header>
+
+<main>
+  <section>
+    <div class="panel">
+      <h2>Mechanism: section at gear height (from mech/params.scad)</h2>
+      <svg id="mech" viewBox="-50 -50 100 100" aria-label="Gear, pinion and hub mechanism">
+        <g transform="scale(1,-1)">
+          <circle id="flange" r="16" fill="none" stroke="var(--ghost)" stroke-dasharray="1.2 1" stroke-width=".35"/>
+          <path id="ghost" fill="none" stroke="var(--ghost)" stroke-dasharray="1.5 1" stroke-width=".35"/>
+          <g id="gear"><path id="gearpath" fill="var(--gear)" stroke="var(--gear-edge)" stroke-width=".25" fill-rule="evenodd"/></g>
+          <g id="pinion"><path id="pinionpath" fill="var(--pinion)" stroke="var(--gear-edge)" stroke-width=".25" fill-rule="evenodd"/></g>
+          <g id="hub">
+            <circle id="hubshaft" fill="var(--hub)"/>
+            <rect id="tailpiece" fill="var(--panel)"/>
+            <circle id="lug" fill="var(--lug)" stroke="var(--panel)" stroke-width=".3"/>
+            <line id="hubmark" stroke="var(--panel)" stroke-width=".6"/>
+          </g>
+        </g>
+      </svg>
+      <div class="legend">
+        <span><i style="background:var(--gear)"></i>output gear (arc slot)</span>
+        <span><i style="background:var(--pinion)"></i>motor pinion</span>
+        <span><i style="background:var(--hub)"></i>hub + lug (turns the bolt)</span>
+        <span><i style="background:var(--push)"></i>lug red = gear pushing</span>
+        <span><i style="border:1px dashed var(--ghost)"></i>slot at park</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Bolt (side view, door edge)</h2>
+      <svg id="boltview" viewBox="0 0 220 60" aria-label="Bolt and door frame">
+        <rect id="door" x="0" y="8" width="110" height="44" fill="var(--door)"/>
+        <g id="framegroup">
+          <rect x="114" y="0" width="106" height="60" fill="var(--frame)"/>
+          <rect x="114" y="22" width="34" height="16" fill="var(--bg)"/>
+        </g>
+        <rect id="bolt" y="23" height="14" rx="2" fill="var(--steel)"/>
+        <text id="bolttext" x="8" y="20" font-size="7" fill="var(--ink)"></text>
+        <text id="doortext" x="118" y="56" font-size="6.5" fill="#fff"></text>
+      </svg>
+      <div class="kv" style="margin-top:8px">
+        <span>drive</span><span id="drive"></span>
+        <span>motor</span><span><div class="bar"><div id="motorbar"></div></div></span>
+        <span>encoder / park</span><span id="enc"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Event log</h2>
+      <div id="log"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="panel">
+      <h2>Scenarios</h2>
+      <div class="row">
+        <button class="primary" onclick="api('scenario','arrive')">Arrive home</button>
+        <button onclick="api('scenario','inside')">Phone inside</button>
+        <button onclick="api('scenario','leave')">Leave</button>
+        <button class="primary" onclick="api('intent')">Touch handle</button>
+      </div>
+      <p class="note">Arrive home fast-forwards a minute of absence, connects the simulated phone (real P-256 login), and walks it up to the door. In approach + intent mode, press Touch handle at the door.</p>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <h2>Phone</h2>
+        <div class="kv">
+          <span>link</span><span id="link"></span>
+          <span>login</span><span id="auth"></span>
+          <span>zone</span><span id="zone"></span>
+          <span>rssi</span><span><div class="bar"><div id="rssibar"></div></div></span>
+          <span>arrival</span><span><div class="bar"><div id="arrbar" style="background:var(--ok)"></div></div></span>
+          <span>auto-unlocks</span><span id="autos"></span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button onclick="api('sim_connect')">Connect sim phone</button>
+          <button onclick="api('sim_disconnect')">Disconnect</button>
+        </div>
+        <div class="row"><span class="label">sim RSSI <b id="simrssiv"></b></span>
+          <input id="simrssi" type="range" min="-100" max="-40" value="-90" oninput="api('sim_rssi', +this.value)"></div>
+        <div class="row">
+          <button onclick="api('cmd','unlock')">App: unlock</button>
+          <button onclick="api('cmd','lock')">App: lock</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>At the door</h2>
+        <div class="row"><span class="label">knob / key <b id="knobv"></b></span>
+          <input id="knob" type="range" min="0" max="90" step="1" value="0" onchange="api('turn', +this.value)"></div>
+        <div class="row">
+          <button onclick="api('turn',0)">Turn to locked</button>
+          <button onclick="api('turn',90)">Turn to unlocked</button>
+        </div>
+        <div class="row"><label><input id="door" type="checkbox" checked onchange="api('door', this.checked)"> door closed</label></div>
+        <div class="row">
+          <button onclick="api('jam',40)">Jam bolt at 40°</button>
+          <button onclick="api('jam',null)">Clear jam</button>
+        </div>
+        <div class="row"><span class="label">battery <b id="battv"></b></span>
+          <input id="batt" type="range" min="3800" max="6500" step="50" value="6000" onchange="api('battery', +this.value)"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Lock settings</h2>
+      <div class="row">
+        <span class="label">unlock mode</span>
+        <select id="mode" onchange="api('mode', +this.value)">
+          <option value="1">approach + handle touch</option>
+          <option value="0">approach only</option>
+        </select>
+        <span class="label">auto-relock</span>
+        <select id="relock" onchange="api('relock', +this.value)">
+          <option value="0">off</option><option value="10">10 s</option><option value="30">30 s</option>
+        </select>
+      </div>
+      <div class="row">
+        <button onclick="api('calibrate')">Calibrate</button>
+        <button onclick="api('power_cycle')">Power cycle</button>
+        <button onclick="api('skip', 60000)">Skip 60 s</button>
+        <button onclick="api('enroll_window')">Open enrolment (60 s)</button>
+      </div>
+      <div class="kv" style="margin-top:6px">
+        <span>calibrated / homed</span><span id="cal"></span>
+        <span>enrolled keys</span><span id="keys"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Real phone over Bluetooth</h2>
+      <div class="kv">
+        <span>status</span><span id="ble"></span>
+        <span>last login / cmd</span><span id="lastres"></span>
+      </div>
+      <div class="row"><label><input id="bleov" type="checkbox" onchange="bleOverride()"> use this slider instead of the phone's RSSI telemetry</label></div>
+      <div class="row"><span class="label">RSSI <b id="blerssiv"></b></span>
+        <input id="blerssi" type="range" min="-100" max="-40" value="-60" oninput="bleOverride()"></div>
+      <p class="note">Windows can't measure the RSSI of a connected phone, so the real lock's job (measuring it) is done by the phone writing to the Telemetry characteristic, or by this slider.</p>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const D2R = Math.PI / 180;
+let P = null;
+
+async function api(action, value) {
+  const r = await fetch('/api/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, value }) });
+  const j = await r.json();
+  if (j.result && j.result !== 'ok') toast(j.result);
+}
+function bleOverride() {
+  api('ble_rssi', $('#bleov').checked ? +$('#blerssi').value : null);
+}
+let toastTimer;
+function toast(text) {
+  const t = $('#toast'); t.textContent = text; t.style.opacity = 1;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.style.opacity = 0), 2200);
+}
+
+// ---------- geometry (same math as mech/lib/geom.scad)
+const pol = (r, a) => [r * Math.cos(a), r * Math.sin(a)];
+const fmt = (p) => `${p[0].toFixed(3)} ${p[1].toFixed(3)}`;
+function gearOutline(m, z, pa, backlash, steps = 6) {
+  pa *= D2R;
+  const rp = m * z / 2, rb = rp * Math.cos(pa), ra = rp + m, rf = rp - 1.25 * m;
+  const inv = (t) => t - Math.atan(t);
+  const halfB = Math.PI / (2 * z) + (Math.tan(pa) - pa) - backlash / (2 * rp);
+  const tMax = Math.sqrt((ra / rb) ** 2 - 1), tMin = rf > rb ? Math.sqrt((rf / rb) ** 2 - 1) : 0;
+  const pts = [];
+  for (let i = 0; i < z; i++) {
+    const c = i * 2 * Math.PI / z;
+    if (rf < rb) pts.push(pol(rf, c - halfB));
+    for (let s = 0; s <= steps; s++) { const t = tMin + (tMax - tMin) * s / steps; pts.push(pol(rb * Math.sqrt(1 + t * t), c - (halfB - inv(t)))); }
+    for (let s = steps; s >= 0; s--) { const t = tMin + (tMax - tMin) * s / steps; pts.push(pol(rb * Math.sqrt(1 + t * t), c + (halfB - inv(t)))); }
+    if (rf < rb) pts.push(pol(rf, c + halfB));
+  }
+  return 'M' + pts.map(fmt).join('L') + 'Z';
+}
+const circlePath = (r) => `M${r} 0A${r} ${r} 0 1 0 ${-r} 0A${r} ${r} 0 1 0 ${r} 0Z`;
+function arcSlot(r, w, a0, a1) {
+  const ro = r + w / 2, ri = r - w / 2, h = w / 2, A0 = a0 * D2R, A1 = a1 * D2R, big = a1 - a0 > 180 ? 1 : 0;
+  return `M${fmt(pol(ro, A0))}A${ro} ${ro} 0 ${big} 1 ${fmt(pol(ro, A1))}A${h} ${h} 0 0 1 ${fmt(pol(ri, A1))}` +
+         `A${ri} ${ri} 0 ${big} 0 ${fmt(pol(ri, A0))}A${h} ${h} 0 0 1 ${fmt(pol(ro, A0))}Z`;
+}
+
+async function init() {
+  P = await (await fetch('/api/params')).json();
+  const slot = arcSlot(P.lug_r, P.lug_d + P.lug_clear, -P.deadband, P.travel + P.deadband);
+  $('#gearpath').setAttribute('d', gearOutline(P.gear_m, P.z_out, P.gear_pa, P.gear_backlash) + circlePath((P.hub_d + 0.5) / 2) + slot);
+  $('#ghost').setAttribute('d', slot);
+  $('#pinionpath').setAttribute('d', gearOutline(P.gear_m, P.z_pin, P.gear_pa, P.gear_backlash) + circlePath(1.55));
+  $('#flange').setAttribute('r', P.flange_d / 2);
+  $('#hubshaft').setAttribute('r', P.hub_d / 2);
+  const tp = $('#tailpiece');
+  tp.setAttribute('x', -P.tp_w / 2); tp.setAttribute('y', -P.tp_t / 2);
+  tp.setAttribute('width', P.tp_w); tp.setAttribute('height', P.tp_t);
+  $('#lug').setAttribute('cx', P.lug_r); $('#lug').setAttribute('r', P.lug_d / 2);
+  const hm = $('#hubmark'); hm.setAttribute('x1', 0); hm.setAttribute('y1', P.hub_d / 2 - 2.2); hm.setAttribute('x2', 0); hm.setAttribute('y2', P.hub_d / 2 - .4);
+  setInterval(poll, 100);
+}
+
+let polling = false;
+async function poll() {
+  if (polling) return; polling = true;
+  try { render(await (await fetch('/api/state')).json()); } catch (e) { $('#blechip').textContent = 'twin not reachable'; }
+  finally { polling = false; }
+}
+
+function render(s) {
+  // mechanism: gear angle in CAD frame = sim gear position + deadband (slot spans [-db, travel+db] on the gear)
+  const gearDeg = s.gear + P.deadband;
+  $('#gear').setAttribute('transform', `rotate(${gearDeg.toFixed(2)})`);
+  const pinDeg = -gearDeg * P.z_out / P.z_pin + 180 / P.z_pin;
+  $('#pinion').setAttribute('transform', `translate(0 ${P.centre_dist.toFixed(3)}) rotate(${pinDeg.toFixed(2)})`);
+  $('#hub').setAttribute('transform', `rotate(${s.bolt.toFixed(2)})`);
+  $('#lug').setAttribute('fill', s.pushing ? 'var(--push)' : 'var(--lug)');
+
+  // bolt: locked = extended 1 inch into the frame
+  const ext = (1 - s.bolt / s.travel) * 25.4;
+  const bolt = $('#bolt'); bolt.setAttribute('x', 110 - 40 + ext); bolt.setAttribute('width', 40);
+  $('#bolttext').textContent = `bolt ${ext.toFixed(1)} mm out`;
+  $('#framegroup').setAttribute('opacity', s.door_closed ? 1 : .25);
+  $('#doortext').textContent = s.door_closed ? 'frame / strike' : 'door OPEN';
+  $('#door').setAttribute('transform', s.door_closed ? '' : 'translate(-6 0)');
+
+  const b = $('#badge'); b.textContent = s.lock_state_name;
+  b.className = 'badge ' + (['locking', 'unlocking', 'calibrating', 'homing'].includes(s.lock_state_name) ? 'moving' : s.lock_state_name);
+  $('#simtime').textContent = `t = ${(s.sim_ms / 1000).toFixed(1)} s`;
+  $('#blechip').textContent = 'bluetooth: ' + s.ble_status;
+  $('#modechip').textContent = 'mode: ' + s.mode_name;
+  $('#drive').textContent = `${s.drive_status_name}${s.stalled ? ' (stalled)' : ''}${s.pushing ? ' · pushing bolt' : ''}`;
+  $('#motorbar').style.width = Math.abs(s.motor_duty) * 100 + '%';
+  $('#motorbar').style.background = s.motor_duty === 0 ? 'var(--muted)' : (s.stalled ? 'var(--bad)' : 'var(--warn)');
+  $('#enc').textContent = `${s.encoder} / ${s.park_position}`;
+
+  $('#link').textContent = s.link ? (s.link === 'sim' ? 'simulated phone' : 'REAL phone (Bluetooth)') : 'none';
+  $('#auth').textContent = s.authenticated ? `yes (key ${s.key_id})` : 'no';
+  $('#zone').textContent = `${s.zone_name}${s.connected ? ` · ${s.rssi.toFixed(0)} dBm (smoothed)` : ''}`;
+  $('#rssibar').style.width = (s.connected ? Math.max(0, Math.min(1, (s.rssi + 100) / 60)) * 100 : 0) + '%';
+  $('#arrbar').style.width = (s.arrival_ms_left / 30000) * 100 + '%';
+  $('#autos').textContent = s.auto_unlocks;
+  $('#simrssiv').textContent = s.sim_rssi ?? '';
+  if (document.activeElement !== $('#simrssi') && s.sim_rssi != null) $('#simrssi').value = s.sim_rssi;
+  $('#knobv').textContent = `${s.bolt.toFixed(0)}°`;
+  if (document.activeElement !== $('#knob')) $('#knob').value = s.bolt;
+  $('#door').checked = !!s.door_closed;
+  $('#battv').textContent = `${s.battery_mv} mV`;
+  if (document.activeElement !== $('#batt')) $('#batt').value = s.battery_mv;
+  if (document.activeElement !== $('#mode')) $('#mode').value = s.mode;
+  if (document.activeElement !== $('#relock')) $('#relock').value = String(s.auto_relock_ms / 1000);
+  $('#cal').textContent = `${s.calibrated ? 'yes' : 'no'} / ${s.homed ? 'yes' : 'no'}`;
+  $('#keys').textContent = s.key_count + (s.enroll_open ? ' · enrolment OPEN' : '');
+  $('#ble').textContent = s.ble_status;
+  $('#lastres').textContent = `${s.last_auth_name} / ${s.last_cmd_name}`;
+  $('#blerssiv').textContent = s.ble_rssi_override ?? 'phone';
+
+  const log = $('#log');
+  const html = s.log.slice().reverse().map((e) => `<div class="${e.kind}"><span class="t">${(e.t / 1000).toFixed(1)}s</span>${e.text.replace(/</g, '&lt;')}</div>`).join('');
+  if (log.dataset.html !== html) { log.innerHTML = html; log.dataset.html = html; }
+}
+init();
+</script>
+</body>
+</html>

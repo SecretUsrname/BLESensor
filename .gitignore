@@ -1,0 +1,15 @@
+# Machine-specific editor/agent config (contains local paths)
+.claude/
+
+# Build output
+firmware/.pio/
+firmware/build/
+twin/build/
+twin/.venv/
+twin/enrolled_keys.json
+__pycache__/
+ios/SLock.xcodeproj/
+ios/SLock/Info.plist
+ios/build/
+ios/Payload/
+*.ipa
