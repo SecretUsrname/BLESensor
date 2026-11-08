@@ -13,9 +13,9 @@ A SwiftUI app that pairs with the lock (or the digital twin on your laptop), log
 
 ## Status
 
-The app has **not been compiled yet**: Swift for iOS only builds on macOS. What has been checked:
-- `twin/test_protocol.py` plays the app's side of the protocol byte for byte against the real firmware core: challenge layout, CryptoKit-format signatures, enrolment id, status offsets, commands, telemetry and the security cases. All 20 checks pass.
-- The first real compile happens in GitHub Actions (or on a Mac). Expect to fix a few compile errors on that first run.
+- **Compiles:** the GitHub Actions build succeeded on the first run (2026-11-08) and produced a 101 KB unsigned `.ipa`.
+- **Protocol verified:** `twin/test_protocol.py` plays the app's side of the protocol byte for byte against the real firmware core: challenge layout, CryptoKit-format signatures, enrolment id, status offsets, commands, telemetry and the security cases. All 20 checks pass.
+- **Not yet run on an iPhone.** Background behaviour in particular still needs the walking test below.
 
 ## Build without a Mac (free)
 
