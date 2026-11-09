@@ -15,7 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Host tests
-        run: bash firmware/run_tests.sh
+        # Compile errors and failing checks are also raised as annotations, which are readable
+        # without signing in to GitHub (plain logs are not).
+        run: |
+          set +e
+          bash firmware/run_tests.sh > test-output.txt 2>&1
+          status=$?
+          cat test-output.txt
+          grep -E "error:|FAIL|tests, " test-output.txt | head -40 | sed 's/%/%25/g; s/^/::error::/'
+          exit $status
 
   board-build:
     runs-on: ubuntu-24.04
