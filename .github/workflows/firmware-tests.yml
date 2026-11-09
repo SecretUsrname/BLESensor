@@ -39,6 +39,20 @@ jobs:
       - name: Build XIAO nRF52840 firmware
         working-directory: firmware
         run: pio run
+      - name: Board signature check vs real P-256 signatures
+        # micro-ecc as fetched by PlatformIO above + the core's SHA-256, on the PC.
+        working-directory: firmware
+        run: |
+          pip install cryptography
+          python test_crypto/gen_vectors.py test_crypto/vectors.h
+          ecc=.pio/libdeps/xiao_ble_sense/micro-ecc
+          gcc -O2 -c "$ecc/uECC.c" -I "$ecc" -o /tmp/uECC.o
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I lib/slock_core/src -I "$ecc" -I test_crypto \
+              test_crypto/verify_test.cpp lib/slock_core/src/slock/sha256.cpp /tmp/uECC.o -o /tmp/verify_test
+          out=$(/tmp/verify_test); s=$?; echo "$out"
+          level=notice; [ $s -eq 0 ] || level=error
+          echo "::$level title=Signature check::$out"
+          exit $s
 
   twin:
     # The digital twin's library, protocol check (a virtual iPhone v0.3) and scenario buttons,

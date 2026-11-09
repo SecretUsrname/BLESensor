@@ -431,6 +431,7 @@ void App::watch_bolt(Millis now) {
     case LockState::Unlocked:
       if (last_end_ != LockState::Uncalibrated && s != last_end_ && !own_move_) {
         log_.add(EventType::BoltTurned, now, -1, s == LockState::Unlocked ? 1 : 0);
+        on_hand_turn(now);
       }
       if (s == LockState::Locked && door_known_open()) log_.add(EventType::FalseLock, now);
       last_end_ = s;
@@ -564,6 +565,25 @@ protocol::StatusPacket App::status(uint16_t conn, Millis now) const {
   s.motor = lock_.drive().calibration().motor;
   s.relock_s = clamp_u8(static_cast<int32_t>(cfg_.relock_after_close_ms / 1000u));
   return s;
+}
+
+}  // namespace slock
+
+namespace slock {
+
+// The enrolment gesture: enroll_gesture_turns knob/key turns within enroll_gesture_ms.
+void App::on_hand_turn(Millis now) {
+  const uint8_t need = cfg_.enroll_gesture_turns;
+  if (need == 0 || need > 8) return;
+  if (turn_n_ == 8) {
+    for (uint8_t i = 1; i < 8; ++i) turns_[i - 1] = turns_[i];
+    --turn_n_;
+  }
+  turns_[turn_n_++] = now;
+  if (turn_n_ >= need && since(now, turns_[turn_n_ - need]) <= cfg_.enroll_gesture_ms) {
+    open_enrollment(now, cfg_.enroll_window_ms);
+    turn_n_ = 0;
+  }
 }
 
 }  // namespace slock

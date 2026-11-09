@@ -7,12 +7,9 @@ Firmware for the Seeed XIAO nRF52840 Sense. All logic lives in a **portable core
 | Part | State |
 |---|---|
 | Portable core (v1 framework, `docs/v1-framework.md`): drive control with motor auto-detect, lock state machine, auth with login v3, gyro door estimator, per-phone side tracking, unlock rule v3, relocking, event log, storage interface | Done; **63 host tests passing** in CI (`firmware-tests` workflow), compiled with `-Werror`. Smart App Control on the dev PC blocks freshly built test binaries, so CI is where they run. |
-| Board layer `src/`: HAL for motor, encoder, halls, INA219, battery; USB-serial bench console | **Compiles** cleanly (7.8% flash, 3.4% RAM); not yet run on hardware |
-| Flash persistence: core saves keys, settings and motor calibration through `hal::Storage` | Board implementation TODO |
-| BLE GATT service (`slock/protocol.h` layout) | TODO |
-| P-256 signature check (micro-ecc) and hardware RNG | TODO |
-| IMU feed (gyro into `App::on_imu`, handle turns into `App::on_intent`) | TODO |
-| Low-power sleep | TODO |
+| Board layer `src/`: HAL for motor, encoder, halls, INA219, battery; IMU (LSM6DS3TR-C) feeding the door estimator and handle detector; flash storage (LittleFS); hardware RNG; P-256 check (core SHA-256 + micro-ecc); Bluetooth service with 3 connections, per-phone challenge/status/log and RSSI; serial bench console | **Compiles** (21% flash, 9% RAM); not yet run on hardware. The signature check is tested in CI against real P-256 signatures |
+| Pairing trigger: turn the knob 3 times within 10 s (or serial `e`) | Done, host-tested |
+| Low power (sleep, gyro only while moving, IMU wake-on-motion), CryptoCell P-256, encrypted links on by default | TODO after bring-up |
 
 ## Run the tests
 
@@ -56,7 +53,8 @@ firmware/
     app.*                   glue: links, logins, sides, door, relocking, commands, status, storage
     intent.*                handle-turn burst detector (placeholder until real door data)
     protocol.h              GATT UUIDs, opcodes, status packet
-  src/                      board layer (HAL implementations + bench console)
+  src/                      board layer: board_hal.h (HAL, flash, RNG, verifier, IMU), ble_link.* (Bluetooth), main.cpp
+  test_crypto/              board signature check vs real P-256 signatures (run in CI)
   test_host/                host tests; SimPlant (mechanism) and DoorSim (door + gyro)
 ```
 
@@ -77,7 +75,13 @@ firmware/
 
 ## Bench bring-up (once the parts arrive)
 
-1. Wire per `src/board_config.h`. Check every `[UNVERIFIED]` value, especially the gearbox ratio and the battery divider.
-2. Upload and open the serial monitor (commands above).
-3. Turn the bolt to LOCKED by hand and send `c`. The status line prints the measured counts per degree against nominal.
-4. Send `u` and `l` and watch the timings. Then turn the knob by hand and confirm the state follows.
+Serial console (115200 baud): `c` calibrate the motor, `u` unlock, `l` lock, `s` status, `e` open pairing for 60 s, `i` print the IMU, `g` print the lock's event log, `v` time of the last signature check, `x` factory reset.
+
+1. Wire per `src/board_config.h`. Check every `[UNVERIFIED]` value, especially the battery divider.
+2. Upload and open the serial monitor. The first status line should say `imu=ok`.
+3. Turn the bolt to LOCKED by hand and send `c`. The status line shows the motor it detected (1:100, 1:150 or 1:300) from the measured counts per degree.
+4. Send `u` and `l` and watch the timings. Turn the knob by hand and confirm the state follows.
+5. **Find the hinge axis:** with the board mounted on the door, send `i` and swing the door open. Set `kDoorGyroAxis` to the axis that moves most and `kDoorGyroSign` so opening reads positive. Then slam the door once and check that `s` shows `door: closed (trusted)`.
+6. **Pair the phone:** turn the knob 3 times within 10 s (or send `e`), then tap *Pair with lock* in the app (v0.3).
+7. **Calibrate the door** with the app's wizard, then walk the scenarios in `docs/v1-framework.md` section 12 (section 15 lists the bench measurements). Send `v` once after a login: a P-256 check with micro-ecc should take tens of milliseconds.
+8. After the app works end to end, set `kRequireEncryption = true` for encrypted, bonded links (iOS asks to pair once).

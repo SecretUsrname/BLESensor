@@ -41,4 +41,21 @@ constexpr float kGearboxRatios[] = {100.f, 150.f, 300.f};  // reported as motor 
 constexpr int kMotorCount = 3;
 constexpr float motor_cpd(int i) { return 7.f * 4.f * kGearboxRatios[i] * (40.f / 12.f) / 360.f; }
 
+// LSM6DS3TR-C IMU on the XIAO Sense: powered from PIN_LSM6DS3TR_C_POWER, on the internal I2C bus
+// (Wire1), address 0x6A. Sampled at 104 Hz: gyro +-250 dps, accelerometer +-2 g.
+constexpr uint8_t kImuAddr = 0x6A;
+// Which gyro axis is the door hinge (vertical once mounted), and the sign that makes "opening"
+// positive. [UNVERIFIED] depends on how the board sits in the housing: check with the serial
+// command 'i' while swinging the door open.
+constexpr int kDoorGyroAxis = 2;   // 0 = x, 1 = y, 2 = z
+constexpr float kDoorGyroSign = 1.f;
+
+// Bluetooth
+constexpr const char* kDeviceName = "SLock";
+constexpr int8_t kTxPowerDbm = 0;        // RSSI references are calibrated per door at this power
+// Encrypted, bonded links (iOS shows a one-time pairing prompt). Off for the first bring-up so
+// there's one variable less; turn on once the app works end to end.
+constexpr bool kRequireEncryption = false;
+constexpr uint32_t kRssiPeriodMs = 100;  // the lock samples each phone's RSSI at 10 Hz
+
 }  // namespace board

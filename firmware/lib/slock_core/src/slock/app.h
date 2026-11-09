@@ -30,6 +30,11 @@ struct AppConfig {
   uint32_t relock_unopened_ms = 15000;    // after an auto-unlock, if the door isn't opened
   uint32_t relock_after_close_ms = 3000;  // after a trusted close; 0 = off
   uint32_t refresh_min_ms = 3000;         // ask a phone for fresh context at most this often
+  // Pairing needs physical access: turning the knob (or key) this many times within gesture_ms
+  // opens the enrolment window for enroll_window_ms.
+  uint8_t enroll_gesture_turns = 3;
+  uint32_t enroll_gesture_ms = 10000;
+  uint32_t enroll_window_ms = 60000;
   PresenceConfig presence;
   SessionConfig session;
   DoorConfig door;
@@ -132,6 +137,7 @@ class App {
   bool door_known_open() const;
   void door_closed(Millis at, bool trusted, Millis now);
   void watch_bolt(Millis now);
+  void on_hand_turn(Millis now);
   void save_keys();
   void save_settings();
 
@@ -167,6 +173,8 @@ class App {
   bool own_move_ = false;                          // a drive operation ran since then
   LockState last_state_ = LockState::Uncalibrated;
   bool cal_saved_ = false;
+  Millis turns_[8] = {};  // times of recent knob/key turns (enrolment gesture)
+  uint8_t turn_n_ = 0;
 };
 
 }  // namespace slock

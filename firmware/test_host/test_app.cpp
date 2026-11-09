@@ -755,3 +755,27 @@ TEST(v1_enrollment_only_inside_window) {
   CHECK(r.app.on_enroll(pub, kPubKeyLen, r.now) == -1);  // one per window
   CHECK(r.count(EventType::Enrolled) == 1);
 }
+
+// Pairing needs physical access: three knob turns within 10 s open the enrolment window.
+TEST(v1_knob_gesture_opens_enrolment) {
+  Rig r;
+  CHECK(!r.app.enrollment_open(r.now));
+  r.p.turn_by_hand(r.p.travel);
+  r.run(1500);
+  r.p.turn_by_hand(0);
+  r.run(1500);
+  CHECK(!r.app.enrollment_open(r.now));  // two turns aren't enough
+  r.p.turn_by_hand(r.p.travel);
+  r.run(1500);
+  CHECK(r.app.enrollment_open(r.now));
+  r.run(61000);
+  CHECK(!r.app.enrollment_open(r.now));  // the window lasts a minute
+
+  r.p.turn_by_hand(0);  // turns spread over more than 10 s don't count
+  r.run(6000);
+  r.p.turn_by_hand(r.p.travel);
+  r.run(6000);
+  r.p.turn_by_hand(0);
+  r.run(1000);
+  CHECK(!r.app.enrollment_open(r.now));
+}

@@ -138,7 +138,7 @@ All of it can be built and tested **without the mechanism**, using an ESP32 dev 
   - The first CI runs caught real gaps, now fixed: stale step data when chatting at the door before turning the handle (context is now re-signed on every handle turn); someone walking in and straight on to a far room being misread (shorter after-close window; inside levels in the first 5 s count on their own).
   - iOS app v0.3 (2026-11-09): login v3 with step data and the home diary, the side card with Correct, the Inside/Outside prompt on Unlock, side-change notifications, the calibration wizard, the lock's event log and a step test. Builds in CI; not yet tried on the phone.
   - Twin (2026-11-09): simulated door with the gyro, a simulated phone with places, walking and home status, and the section 12 scenarios as buttons. Its library is blocked by Smart App Control on the dev PC, so `test_protocol.py` (a virtual iPhone v0.3) and `test_scenarios.py` (every scenario button) run in CI on Linux.
-  - Still to do (spec section 14): the board BLE/IMU/flash layer.
+  - Board layer (2026-11-09): Bluetooth with 3 phones, IMU into the door estimator and handle detector, LittleFS storage, hardware RNG, P-256 check (core SHA-256 + micro-ecc), pairing by turning the knob 3 times. Compiles (21% flash); not yet run on hardware. Next: bench bring-up when the parts arrive (firmware/README.md), then low power.
 - **Auto-unlock rules v2 (2026-11-09, superseded by the v1 framework):**
   - arrival judged per phone at login
   - armed for 5 min, but unlocking only in a 30 s window at the door (Close)
