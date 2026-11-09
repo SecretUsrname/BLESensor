@@ -1,9 +1,9 @@
 import CoreLocation
 import Foundation
 
-/// The home geofence. The app signs "am I home, and since when did I arrive" into every login, so the
-/// lock can tell a genuine arrival from a relayed phone (which knows it's somewhere else) or from a
-/// phone that never left (arrived hours ago).
+/// The home geofence. The app signs "am I home, when did I last leave and arrive" into every login, so
+/// the lock can refuse a relayed phone (which knows it's somewhere else) and can tell whether door
+/// events it saw while the phone was disconnected happened while you were away.
 ///
 /// Uses iOS region monitoring, which wakes the app in the background on entry and exit and needs
 /// "Always" location permission. GPS-free when idle; battery cost is small.
@@ -15,6 +15,7 @@ final class HomeLocation: NSObject, ObservableObject {
     @Published private(set) var homeSet: Bool
     @Published private(set) var insideHome: Bool?
     @Published private(set) var lastEntry: Date?
+    @Published private(set) var lastExit: Date?
 
     /// Called when anything that goes into the signed context changes (LockManager re-sends it).
     var onChange: (() -> Void)?
@@ -28,6 +29,7 @@ final class HomeLocation: NSObject, ObservableObject {
         static let lat = "slock.home.lat"
         static let lon = "slock.home.lon"
         static let entry = "slock.home.lastEntry"
+        static let exit = "slock.home.lastExit"
     }
 
     private override init() {
@@ -36,6 +38,7 @@ final class HomeLocation: NSObject, ObservableObject {
         _homeSet = Published(initialValue: defaults.object(forKey: Keys.lat) != nil)
         _insideHome = Published(initialValue: nil)
         _lastEntry = Published(initialValue: defaults.object(forKey: Keys.entry) as? Date)
+        _lastExit = Published(initialValue: defaults.object(forKey: Keys.exit) as? Date)
         super.init()
         manager.delegate = self
         if let region = manager.monitoredRegions.first(where: { $0.identifier == regionId }) {
@@ -43,19 +46,21 @@ final class HomeLocation: NSObject, ObservableObject {
         }
     }
 
-    /// ctx[0]: bit0 = home set up with Always permission, bit1 = inside it now.
-    /// ctx[1]: minutes since the last ENTRY into the home area (255 = unknown / not inside).
-    var contextBytes: Data {
+    /// The home part of the v3 login context: flags (bit0 = home set up with Always permission,
+    /// bit1 = inside it now), minutes since the last ENTRY and since the last EXIT (0xFFFF = unknown).
+    /// This is the "diary" the lock uses to tell whether a door event happened while you were away.
+    /// Times stay on the phone; only these three numbers are signed into each login.
+    var homeFields: (flags: UInt8, entryMinutes: UInt16, exitMinutes: UInt16) {
         let usable = homeSet && authorization == .authorizedAlways
-        var flags: UInt8 = usable ? 1 : 0
-        var minutes: UInt8 = 255
-        if usable, insideHome == true {
-            flags |= 2
-            if let entry = lastEntry {
-                minutes = UInt8(min(254, max(0, Int(Date().timeIntervalSince(entry) / 60))))
-            }
-        }
-        return Data([flags, minutes])
+        guard usable else { return (0, 0xFFFF, 0xFFFF) }
+        var flags: UInt8 = 1
+        if insideHome == true { flags |= 2 }
+        return (flags, Self.minutes(since: lastEntry), Self.minutes(since: lastExit))
+    }
+
+    private static func minutes(since date: Date?) -> UInt16 {
+        guard let date else { return 0xFFFF }
+        return UInt16(min(65534, max(0, Int(Date().timeIntervalSince(date) / 60))))
     }
 
     var summary: String {
@@ -102,9 +107,11 @@ final class HomeLocation: NSObject, ObservableObject {
         defaults.removeObject(forKey: Keys.lat)
         defaults.removeObject(forKey: Keys.lon)
         defaults.removeObject(forKey: Keys.entry)
+        defaults.removeObject(forKey: Keys.exit)
         homeSet = false
         insideHome = nil
         lastEntry = nil
+        lastExit = nil
         log.add("home location cleared")
         onChange?()
     }
@@ -133,6 +140,8 @@ extension HomeLocation: CLLocationManagerDelegate {
         defaults.set(loc.coordinate.latitude, forKey: Keys.lat)
         defaults.set(loc.coordinate.longitude, forKey: Keys.lon)
         defaults.removeObject(forKey: Keys.entry)
+        defaults.removeObject(forKey: Keys.exit)
+        lastExit = nil
         for region in m.monitoredRegions where region.identifier == regionId {
             m.stopMonitoring(for: region)
         }
@@ -166,6 +175,8 @@ extension HomeLocation: CLLocationManagerDelegate {
     func locationManager(_ m: CLLocationManager, didExitRegion region: CLRegion) {
         guard region.identifier == regionId else { return }
         insideHome = false
+        lastExit = Date()
+        UserDefaults.standard.set(lastExit, forKey: Keys.exit)
         log.add("left the home area")
         onChange?()
     }

@@ -1,4 +1,4 @@
-# SLock iOS app (v0.1)
+# SLock iOS app (v0.3)
 
 A SwiftUI app that pairs with the lock (or the digital twin on your laptop), logs in with a Secure Enclave key, and **reconnects in the background when you come home**. The background reconnect is the main thing this version exists to test.
 
@@ -8,8 +8,22 @@ A SwiftUI app that pairs with the lock (or the digital twin on your laptop), log
 - **Login:** on every connection, signs the lock's challenge (`"SLK1" | lock_id | nonce`). This works in the background and with the phone locked, because the key is created with *after first unlock* access, not CryptoKit's default *when unlocked*.
 - **Background reconnect:** Bluetooth state restoration, plus a permanent pending connect to the saved lock. iOS completes the connection when the lock is back in range, even with the app suspended, and wakes the app to log in.
 - **Signal reporting:** reports its measured RSSI to the lock. Only the Windows twin needs this; the real lock measures RSSI itself. In the background, iOS doesn't run timers, so the app reports for 60 s after each reconnection.
-- **Controls:** Unlock and Lock buttons, unlock-mode picker, lock status (state, zone, arrival, battery, last results).
+- **Controls:** Unlock and Lock buttons, lock status (state, zone, side, door, battery, last results).
 - **Debug:** an event log you can share as a file, and optional notifications for background events. There's no debugger with a sideloaded app, so this is how you see what happened in your pocket.
+
+## v1 framework (v0.3)
+
+For locks running the v1 framework firmware (status packet version 2). See `docs/v1-framework.md`.
+
+- **Login v3:** every login signs your home-area state, minutes since you last **left** and last **arrived** (the "diary" the lock uses for door events it saw while you were disconnected), and step data from the motion coprocessor. Needs Motion & Fitness access.
+- **Your side:** the main screen shows "Lock thinks you're inside / outside / unknown" and why, with a **Correct** button. A correction is trusted after one confirmation.
+- **Unlock asks where you are:** "I'm inside" or "I'm outside", with the lock's guess marked. Your answer becomes your side.
+- **Side-change notifications** (turn on *Notifications*): each has "I'm inside" and "I'm outside" buttons. "I'm outside" needs Face ID first, since it enables auto-unlock.
+- **Setup:** the door calibration wizard (4 steps), strict mode, and the relock delay after the door closes.
+- **Debug:**
+  - the **lock's event log**: auto-unlocks, side changes, relocks, tamper, pairing
+  - a **step test**, to measure the pedometer's delay at your door before the hardware arrives
+- **Older firmware:** if the lock reports status version 1 (for example the twin before its update), the app falls back to the v2 login and hides side tracking.
 
 ## Home location (v0.2)
 

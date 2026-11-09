@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.3.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   SLock:
@@ -28,6 +28,7 @@ targets:
         NSBluetoothAlwaysUsageDescription: SLock uses Bluetooth to talk to your door lock and unlock it as you arrive.
         NSLocationWhenInUseUsageDescription: SLock uses your home location to tell your lock when you have genuinely arrived home.
         NSLocationAlwaysAndWhenInUseUsageDescription: SLock notices when you arrive home, even when the app is closed, so your lock knows a nearby phone really just came home and isn't being relayed.
+        NSMotionUsageDescription: SLock checks whether you have been walking in the last few seconds, so a phone left lying near the door can never unlock it.
         UIBackgroundModes: [bluetooth-central]
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]

@@ -31,6 +31,7 @@ final class LockManager: NSObject, ObservableObject {
     @Published private(set) var phoneRSSI: Int?
     @Published private(set) var lockName: String?
     @Published private(set) var keyId: Int?
+    @Published private(set) var lockEvents: [LockEvent] = []
     @Published var notifyInBackground: Bool {
         didSet {
             UserDefaults.standard.set(notifyInBackground, forKey: Keys.notify)
@@ -54,7 +55,14 @@ final class LockManager: NSObject, ObservableObject {
     private var rssiTimer: Timer?
     private var lastTelemetry = Date.distantPast
     private var backgroundRssiUntil = Date.distantPast
+    private var pendingSide: Side?
+    private var expectSideChange = false  // the user just set or confirmed their side
+    private var logReading = false
     private let log = EventLog.shared
+
+    static let sideCategory = "slock.side"
+    static let actionInside = "slock.side.inside"
+    static let actionOutside = "slock.side.outside"
 
     private override init() {
         let defaults = UserDefaults.standard
@@ -62,6 +70,17 @@ final class LockManager: NSObject, ObservableObject {
         _notifyInBackground = Published(initialValue: defaults.bool(forKey: Keys.notify))
         super.init()
         HomeLocation.shared.onChange = { [weak self] in self?.homeContextChanged() }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.setNotificationCategories([UNNotificationCategory(
+            identifier: Self.sideCategory,
+            actions: [
+                UNNotificationAction(identifier: Self.actionInside, title: "I'm inside", options: []),
+                // Outside enables auto-unlock, so it needs the phone unlocked (Face ID) first.
+                UNNotificationAction(identifier: Self.actionOutside, title: "I'm outside",
+                                     options: [.authenticationRequired]),
+            ],
+            intentIdentifiers: [])])
         central = CBCentralManager(delegate: self, queue: nil, options: [
             CBCentralManagerOptionRestoreIdentifierKey: "dev.slock.central",
             CBCentralManagerOptionShowPowerAlertKey: true,
@@ -80,9 +99,50 @@ final class LockManager: NSObject, ObservableObject {
         }
     }
 
-    func unlock() { send(.unlock) }
+    /// Unlock from the app. `side` is what the user confirmed ("I'm inside / I'm outside"): the lock
+    /// takes it as this phone's side.
+    func unlock(side: Side?) {
+        send(.unlock, side.map { [$0.rawValue] } ?? [])
+    }
+
     func lock() { send(.lock) }
-    func setMode(_ mode: UnlockMode) { send(.setMode, [mode.rawValue]) }
+
+    /// A confirmed correction: the lock trusts it like a side it measured.
+    func setSide(_ side: Side) {
+        guard phase == .ready else {
+            pendingSide = side  // e.g. tapped on a notification while reconnecting
+            log.add("will tell the lock \"\(side.label)\" once logged in")
+            return
+        }
+        pendingSide = nil
+        send(.setSide, [side.rawValue])
+    }
+
+    func setStrict(_ on: Bool) { send(.setStrict, [on ? 1 : 0]) }
+
+    func setRelock(seconds: Int) {
+        let s = UInt16(clamping: seconds)
+        send(.setRelock, [UInt8(s & 0xFF), UInt8(s >> 8)])
+    }
+
+    /// Door calibration wizard step: 1 outside at the door, 2 inside at the lock, 3 two metres away,
+    /// 4 measure the door's blocking at the next close, 0 reset.
+    func doorCalibration(step: UInt8) { send(.doorCal, [step]) }
+
+    /// Fetch the lock's own event log from the start (it keeps about 100 events).
+    func readLockLog() {
+        lockEvents = []
+        requestLog(from: 1)
+    }
+
+    private func requestLog(from seq: UInt32) {
+        guard chars[SLockGATT.log] != nil else {
+            log.add("this lock has no event log (older firmware)")
+            return
+        }
+        logReading = true
+        send(.readLog, [UInt8(seq & 0xFF), UInt8((seq >> 8) & 0xFF), UInt8((seq >> 16) & 0xFF), UInt8(seq >> 24)])
+    }
 
     func forget() {
         // Revoke this phone's key on the lock first, so a forgotten phone can't log in again.
@@ -170,8 +230,9 @@ final class LockManager: NSObject, ObservableObject {
             return
         }
         awaitingCommand = op
+        if op == .setSide || (op == .unlock && !args.isEmpty) { expectSideChange = true }
         p.writeValue(Data([op.rawValue] + args), for: c, type: .withResponse)
-        log.add("sent \(op)")
+        if op != .readLog { log.add("sent \(op)\(args.isEmpty ? "" : " \(args)")") }
     }
 
     private func writeEnroll() {
@@ -201,19 +262,46 @@ final class LockManager: NSObject, ObservableObject {
             log.add("the lock sent a challenge, but this phone isn't paired yet")
             return
         }
-        guard let p = peripheral, let c = chars[SLockGATT.response] else { return }
+        guard peripheral != nil, chars[SLockGATT.response] != nil else { return }
+        lastSignedNonce = nonce  // claim it now: the pedometer read below is asynchronous
+        let home = HomeLocation.shared.homeFields
+
+        // Older firmware (status version 1, e.g. the digital twin before its v1 update) only knows
+        // the v2 login with 2 bytes of home context.
+        if let s = status, !s.isV1Framework {
+            let entry = UInt8(min(255, Int(home.entryMinutes)))
+            let context = Data([home.flags, home.flags & 2 != 0 ? min(entry, 254) : 255])
+            sendLogin(kid: kid, tag: "SLK2", lockId: lockId, nonce: nonce, context: context)
+            return
+        }
+
+        // v3 login: home flags and diary plus step data, signed together with the challenge so a relay
+        // can't alter them.
+        Motion.shared.read { [weak self] reading in
+            guard let self else { return }
+            var context = Data([home.flags | (reading != nil ? 4 : 0)])
+            context += Self.le16(home.entryMinutes) + Self.le16(home.exitMinutes)
+            context += Self.le32(reading?.stepsToday ?? 0) + Self.le16(reading?.secondsSinceStep ?? 0xFFFF)
+            self.sendLogin(kid: kid, tag: "SLK3", lockId: lockId, nonce: nonce, context: context)
+        }
+    }
+
+    private func sendLogin(kid: Int, tag: String, lockId: Data, nonce: Data, context: Data) {
+        guard let p = peripheral, p.state == .connected, let c = chars[SLockGATT.response] else { return }
         do {
-            // v2 login: the home context is signed together with the challenge, so it can't be altered.
-            let context = HomeLocation.shared.contextBytes
-            let message = Data("SLK2".utf8) + lockId + nonce + context
-            let signature = try KeyManager.shared.sign(message)
-            lastSignedNonce = nonce
+            let signature = try KeyManager.shared.sign(Data(tag.utf8) + lockId + nonce + context)
             p.writeValue(Data([UInt8(kid)]) + context + signature, for: c, type: .withResponse)
-            log.add("signed the lock's challenge as key \(kid), home: \(HomeLocation.shared.summary)"
+            let steps = Motion.shared.lastReading.map { "last step ~\($0.secondsSinceStep) s ago" } ?? "no step data"
+            log.add("signed \(tag) login as key \(kid); home: \(HomeLocation.shared.summary); \(steps)"
                     + (isBackground ? " (in background)" : ""))
         } catch {
             log.add("signing failed: \(error)")
         }
+    }
+
+    private static func le16(_ v: UInt16) -> Data { Data([UInt8(v & 0xFF), UInt8(v >> 8)]) }
+    private static func le32(_ v: UInt32) -> Data {
+        Data([UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8(v >> 24)])
     }
 
     private func handleStatus(_ data: Data) {
@@ -249,24 +337,47 @@ final class LockManager: NSObject, ObservableObject {
             }
         }
         if old?.zone != s.zone { log.add("lock sees this phone as \(s.zoneName)") }
-        if old?.arrivalActive != s.arrivalActive, s.arrivalActive {
-            log.add("lock detected an ARRIVAL: armed (home context \(s.contextOK ? "accepted" : "REFUSED"))")
-            if isBackground { notify("Armed", "Walk up to the door and touch the handle") }
+        if old?.atDoor != s.atDoor { log.add(s.atDoor ? "at the door (~1 m)" : "left the door") }
+        if old?.ready != s.ready {
+            log.add(s.ready ? "READY: turning the handle will unlock"
+                            : "not ready (side \(s.side.label), home \(s.homeOK ? "ok" : "no"), carried \(s.carried ? "yes" : "no"))")
         }
-        if old?.atDoor != s.atDoor {
-            log.add(s.atDoor ? "at the door: unlock window open" : "unlock window closed")
+        if s.isV1Framework, let old, old.isV1Framework, old.side != s.side, !s.sidePending {
+            sideChanged(to: s.side, reason: s.sideReason)
         }
+        if s.tamper, old?.tamper != true {
+            log.add("TAMPER: the lock felt the door move while locked")
+            notify("Door moved while locked", "Check your door.")
+        }
+        if let pending = pendingSide, s.authenticated { setSide(pending) }
         if let op = awaitingCommand {
             log.add("\(op) result: \(s.lastCmdName)")
             awaitingCommand = nil
         }
     }
 
-    private func notify(_ title: String, _ body: String) {
+    /// Every side change gets a notification with a one-tap correction, except ones the user just made.
+    private func sideChanged(to side: Side, reason: SideReason) {
+        log.add("lock now thinks you're \(side.label.uppercased()) (\(reason.label))")
+        if expectSideChange || reason == .user {
+            expectSideChange = false
+            return
+        }
+        let body: String
+        switch side {
+        case .outside: body = "Because \(reason.label). Turning the handle at your door will unlock it."
+        case .inside: body = "Because \(reason.label). It won't auto-unlock for this phone until you leave."
+        case .unknown: body = "Because \(reason.label). It won't auto-unlock until it's sure, or you tell it."
+        }
+        notify("Lock thinks you're \(side.label.lowercased())", body, category: Self.sideCategory)
+    }
+
+    private func notify(_ title: String, _ body: String, category: String? = nil) {
         guard notifyInBackground else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
+        if let category { content.categoryIdentifier = category }
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
@@ -379,6 +490,31 @@ extension LockManager: CBPeripheralDelegate {
             handleChallenge(data)
         } else if c.uuid == SLockGATT.status {
             handleStatus(data)
+        } else if c.uuid == SLockGATT.log {
+            handleLogPage(data)
+        }
+    }
+
+    /// One page of the lock's event log: count | events. Keeps reading until the lock has no more.
+    private func handleLogPage(_ data: Data) {
+        let b = [UInt8](data)
+        guard let n = b.first, b.count >= 1 + Int(n) * 12 else {
+            logReading = false
+            return
+        }
+        // Event times are lock uptime: convert with the uptime in the latest status packet.
+        let uptime = Double(status?.uptimeMs ?? 0)
+        let now = Date()
+        for i in 0..<Int(n) {
+            guard var e = LockEvent(b[(1 + i * 12)..<(13 + i * 12)]) else { continue }
+            e.date = now.addingTimeInterval(-(uptime - Double(e.tMs)) / 1000)
+            lockEvents.append(e)
+        }
+        if n > 0, let p = peripheral, let c = chars[SLockGATT.log] {
+            p.readValue(for: c)
+        } else {
+            logReading = false
+            log.add("read \(lockEvents.count) events from the lock")
         }
     }
 
@@ -393,8 +529,13 @@ extension LockManager: CBPeripheralDelegate {
             if let s = chars[SLockGATT.status] { p.readValue(for: s) }
             pendingEnroll = false
             awaitingEnrollResult = true
-        } else if c.uuid == SLockGATT.command, let s = chars[SLockGATT.status] {
-            p.readValue(for: s)
+        } else if c.uuid == SLockGATT.command {
+            if logReading, awaitingCommand == .readLog, let l = chars[SLockGATT.log] {
+                awaitingCommand = nil
+                p.readValue(for: l)  // the lock has set this link's log cursor
+            } else if let s = chars[SLockGATT.status] {
+                p.readValue(for: s)
+            }
         }
     }
 
@@ -409,5 +550,29 @@ extension LockManager: CBPeripheralDelegate {
         }
         // Timers don't run while suspended, so in the background keep a read chain going for a while.
         if isBackground, Date() < backgroundRssiUntil { p.readRSSI() }
+    }
+}
+
+// MARK: - Notifications (side corrections from the lock screen)
+
+extension LockManager: UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        done([.banner, .list])  // show side changes even while the app is open
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler done: @escaping () -> Void) {
+        switch response.actionIdentifier {
+        case Self.actionInside:
+            log.add("notification: you said you're inside")
+            setSide(.inside)
+        case Self.actionOutside:
+            log.add("notification: you said you're outside")
+            setSide(.outside)
+        default:
+            break
+        }
+        done()
     }
 }
