@@ -200,7 +200,7 @@ def main() -> int:
     check(T.AUTH_RESULTS[core.auth(C, bytes(tampered))] == "bad-signature", "altered home flag rejected")
     nonce = core.connect(C)
     tampered = bytearray(T.login_response(phone.key, phone.kid, core.lock_id(), nonce, phone.ctx()))
-    tampered[10] = 0  # pretend the last step was just now
+    tampered[10] ^= 0xFF  # change "seconds since the last step" (context bytes 9-10) after signing
     check(T.AUTH_RESULTS[core.auth(C, bytes(tampered))] == "bad-signature", "altered step data rejected")
     nonce = core.connect(C)
     forged = T.login_response(phone.key, phone.kid, b"OTHERLCK", nonce, phone.ctx())

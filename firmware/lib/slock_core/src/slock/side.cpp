@@ -242,7 +242,7 @@ void SideTracker::on_door_closed(Millis close_at, Millis now) {
 }
 
 void SideTracker::decide(uint8_t key, Track& t, bool final, Millis now) {
-  (void)now;
+  const bool settled_window_done = since(now, t.close_at) >= cfg_.settle_ms;
   const DoorCalibration& c = *cal_;
   const float block = c.block_db < 3 ? 3.f : static_cast<float>(c.block_db);
   int out = 0, in = 0;
@@ -271,8 +271,8 @@ void SideTracker::decide(uint8_t key, Track& t, bool final, Millis now) {
   Side result;
   if (out >= 4 && in == 0) {
     result = Side::Outside;
-  } else if (in >= 4 && out == 0) {
-    result = Side::Inside;
+  } else if (out == 0 && (in >= 4 || (in >= 2 && settled_window_done))) {
+    result = Side::Inside;  // the safe answer may come early: nothing points outside
   } else if (!final) {
     return;  // keep watching
   } else if (in >= 2 && in > out) {
