@@ -322,6 +322,18 @@ extension LockManager: CBPeripheralDelegate {
         p.discoverCharacteristics(nil, for: service)
     }
 
+    /// The lock's GATT service went away and came back on the same link (e.g. the lock's software
+    /// restarted without the radio dropping). Old characteristic handles are dead: start over.
+    func peripheral(_ p: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+        let ours = invalidatedServices.contains(where: { $0.uuid == SLockGATT.service })
+        guard ours || chars[SLockGATT.status] == nil else { return }  // also catches "service added back"
+        log.add("the lock's service changed: rediscovering and logging in again")
+        chars = [:]
+        lastSignedNonce = nil
+        if phase == .ready { phase = .connected }
+        p.discoverServices([SLockGATT.service])
+    }
+
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         for c in service.characteristics ?? [] { chars[c.uuid] = c }
         for uuid in [SLockGATT.challenge, SLockGATT.status] {

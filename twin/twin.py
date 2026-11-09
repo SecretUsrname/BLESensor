@@ -149,6 +149,10 @@ class Core:
     def disconnect(self) -> None:
         self._call("twin_disconnect")
 
+    def take_new_challenge(self) -> bytes | None:
+        buf = (ctypes.c_ubyte * 16)()
+        return bytes(buf) if self._call("twin_take_new_challenge", buf) else None
+
     def auth(self, data: bytes) -> int:
         return self._call("twin_auth", data, ctypes.c_uint32(len(data)))
 
@@ -306,6 +310,7 @@ class Twin:
                 continue
             last += ms / 1000
             self.core.advance(min(ms, 200))
+            self._renew_login()
             if now - last_rssi >= 0.2:  # phones report RSSI a few times a second
                 last_rssi = now
                 if self.link == "sim" and self.sim_rssi is not None:
@@ -314,7 +319,23 @@ class Twin:
                     self.core.rssi(self.ble_rssi_override)
             self._watch()
 
+    def _renew_login(self) -> None:
+        """The lock issued a fresh challenge because the login expired on a live connection."""
+        nonce = self.core.take_new_challenge()
+        if nonce is None:
+            return
+        self.event("login expired on a live connection: lock issued a new challenge", "auth")
+        if self.link == "ble" and self.ble is not None:
+            self.ble.publish_challenge(nonce)
+        elif self.link == "sim":
+            self._sim_answer(nonce)
+
     # ---- simulated phone
+    def _sim_answer(self, nonce: bytes) -> None:
+        msg = b"SLK1" + self.lock_id + nonce
+        r = self.core.auth(bytes([self.sim_key_id]) + p256_sign(self.sim_key, msg))
+        self.event(f"sim phone signed the challenge with its P-256 key: {AUTH_RESULTS[r]}", "auth")
+
     def sim_connect(self, authenticate: bool = True) -> str:
         if self.link == "ble":
             return "a real phone is connected over Bluetooth; disconnect it first"
@@ -325,9 +346,7 @@ class Twin:
         if self.sim_rssi is None:
             self.sim_rssi = -90
         if authenticate:
-            msg = b"SLK1" + self.lock_id + nonce
-            r = self.core.auth(bytes([self.sim_key_id]) + p256_sign(self.sim_key, msg))
-            self.event(f"sim phone signed the challenge with its P-256 key: {AUTH_RESULTS[r]}", "auth")
+            self._sim_answer(nonce)
         return "ok"
 
     def sim_disconnect(self) -> str:
@@ -403,6 +422,8 @@ class Twin:
             self.ble_rssi_override = None if value is None else int(value)
             return "ok"
         if name == "scenario":
+            if self.link == "ble":
+                return "scenarios drive the simulated phone: disconnect your real phone first (or just walk!)"
             fn = {"arrive": self.scenario_arrive, "leave": self.scenario_leave, "inside": self.scenario_inside}[value]
             return self.start_scenario(value, fn())
         if name == "intent":
@@ -573,6 +594,10 @@ class BleServer:
 
     def _challenge_value(self) -> bytes:
         return self.twin.lock_id + self.nonce  # lock_id (8) | nonce (16), see protocol.h
+
+    def publish_challenge(self, nonce: bytes) -> None:
+        self.nonce = nonce
+        self._notify("challenge", self._challenge_value())
 
     def _on_read(self, name: str, args) -> None:
         deferral = args.get_deferral()

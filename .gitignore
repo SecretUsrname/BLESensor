@@ -1,6 +1,9 @@
 # Machine-specific editor/agent config (contains local paths)
 .claude/
 
+# Logs from local tools (e.g. Sideloadly's daemon contains device details)
+*.log
+
 # Build output
 firmware/.pio/
 firmware/build/

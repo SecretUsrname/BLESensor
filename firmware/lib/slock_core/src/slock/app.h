@@ -28,6 +28,10 @@ class App {
 
   // BLE link events
   const uint8_t* on_connect(Millis now);  // returns the challenge nonce to publish
+  // A login only lasts SessionConfig::session_ms. When it expires on a connection that stays up,
+  // the app issues a fresh challenge; the BLE layer must publish it (notify). Returns nullptr if
+  // there's nothing new since the last call.
+  const uint8_t* take_new_challenge();
   void on_disconnect(Millis now);
   AuthResult on_auth_response(const uint8_t* data, size_t len, Millis now);  // key_id | sig(64)
   CmdResult on_command(const uint8_t* data, size_t len, Millis now);        // opcode | args
@@ -53,6 +57,8 @@ class App {
   hal::Battery& battery_;
   AppConfig cfg_;
   bool connected_ = false;
+  bool was_authenticated_ = false;
+  const uint8_t* fresh_challenge_ = nullptr;
   bool intent_pending_ = false;
   Millis intent_at_ = 0;
   bool enroll_open_ = false;

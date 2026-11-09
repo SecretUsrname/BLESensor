@@ -48,8 +48,9 @@ struct AppRig {
     }
   }
 
-  AuthResult connect_and_auth() {
-    const uint8_t* nonce = app.on_connect(now);
+  AuthResult connect_and_auth() { return answer(app.on_connect(now)); }
+
+  AuthResult answer(const uint8_t* nonce) {
     uint8_t msg[kAuthMsgLen];
     Session::build_message(kLockId, nonce, msg);
     uint8_t resp[1 + kSigLen];
@@ -144,6 +145,26 @@ TEST(app_commands_need_authentication) {
 
   CHECK(r.app.status(r.now).last_cmd_result == static_cast<uint8_t>(CmdResult::Ok));
   CHECK(r.app.status(r.now).auth == 1);
+}
+
+TEST(app_login_renews_on_a_long_connection) {
+  AppRig r(UnlockMode::ApproachAndIntent);
+  CHECK(r.connect_and_auth() == AuthResult::Ok);
+  CHECK(r.app.take_new_challenge() == nullptr);  // nothing new while the login is fresh
+  r.run(119000);
+  CHECK(r.app.status(r.now).auth == 1);
+  r.run(2000);  // past the 2-minute session limit
+  CHECK(r.app.status(r.now).auth == 0);
+  const uint8_t* fresh = r.app.take_new_challenge();
+  CHECK(fresh != nullptr);
+  CHECK(r.app.take_new_challenge() == nullptr);  // handed out once
+  CHECK(r.answer(fresh) == AuthResult::Ok);
+  uint8_t unlock[] = {static_cast<uint8_t>(protocol::Opcode::Unlock)};
+  CHECK(r.app.on_command(unlock, 1, r.now) == CmdResult::Ok);
+
+  r.app.on_disconnect(r.now);
+  r.run(200000);
+  CHECK(r.app.take_new_challenge() == nullptr);  // no re-challenge without a connection
 }
 
 TEST(app_enrollment_only_inside_window) {

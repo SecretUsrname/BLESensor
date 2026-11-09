@@ -196,6 +196,13 @@ TWIN_API void twin_connect(void* h, uint8_t* nonce_out) {
   std::memcpy(nonce_out, T(h)->app->on_connect(T(h)->now), kNonceLen);
 }
 TWIN_API void twin_disconnect(void* h) { T(h)->app->on_disconnect(T(h)->now); }
+// 1 and the new nonce if the login expired on a live connection and a fresh challenge is due.
+TWIN_API int twin_take_new_challenge(void* h, uint8_t* nonce_out) {
+  const uint8_t* c = T(h)->app->take_new_challenge();
+  if (c == nullptr) return 0;
+  std::memcpy(nonce_out, c, kNonceLen);
+  return 1;
+}
 TWIN_API int twin_auth(void* h, const uint8_t* data, uint32_t len) {
   return static_cast<int>(T(h)->app->on_auth_response(data, len, T(h)->now));
 }

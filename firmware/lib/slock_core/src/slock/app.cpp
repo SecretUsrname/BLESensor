@@ -29,8 +29,14 @@ void App::tick(Millis now) {
 
   if (intent_pending_ && since(now, intent_at_) > cfg_.intent_hold_ms) intent_pending_ = false;
 
+  bool authenticated = connected_ && session_.authenticated(now);
+  if (connected_ && was_authenticated_ && !authenticated) {
+    fresh_challenge_ = session_.new_challenge();  // login expired on a live link: ask again
+  }
+  was_authenticated_ = authenticated;
+
   PolicyInputs in;
-  in.authenticated = connected_ && session_.authenticated(now);
+  in.authenticated = authenticated;
   in.arrival = presence_.arrival_active(now);
   in.zone = presence_.zone();
   in.intent = intent_pending_;
@@ -44,12 +50,22 @@ void App::tick(Millis now) {
 
 const uint8_t* App::on_connect(Millis now) {
   connected_ = true;
+  was_authenticated_ = false;
+  fresh_challenge_ = nullptr;
   presence_.on_connect(now);
   return session_.new_challenge();
 }
 
+const uint8_t* App::take_new_challenge() {
+  const uint8_t* c = fresh_challenge_;
+  fresh_challenge_ = nullptr;
+  return c;
+}
+
 void App::on_disconnect(Millis now) {
   connected_ = false;
+  was_authenticated_ = false;
+  fresh_challenge_ = nullptr;
   presence_.on_disconnect(now);
   session_.end();
 }
