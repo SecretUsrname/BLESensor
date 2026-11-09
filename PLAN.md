@@ -124,7 +124,15 @@ All of it can be built and tested **without the mechanism**, using an ESP32 dev 
 - **Deliverables:** firmware repo with passing host tests, protocol spec and test vectors, approach simulator with tuned parameters, Android app (beta), iOS wake-up proof-of-concept.
 - **Status (2026-11-08):** firmware skeleton in `firmware/`. Portable core done with 30 host tests passing: lost-motion drive, lock state machine, auth session, presence and arrival, unlock policy, placeholder intent detector. The board layer (bench serial console) compiles for the XIAO (Adafruit nRF52 core) but hasn't run on hardware. Still to do: BLE GATT, P-256 verify, flash persistence, IMU, sleep. See `firmware/README.md`.
 - **Digital twin (2026-11-08):** `twin/` runs the real firmware core (`slock::App`, 36 host tests) against the simulated CAD mechanism, with a live animated page and a Windows Bluetooth GATT server so an iPhone can connect before the XIAO exists. Scenarios verified in the twin: arrival plus handle touch unlocks; a phone inside never does; jam, power cycle and low battery behave safely. Confirmed from an iPhone with nRF Connect (2026-11-08): connection, status notifications and RSSI telemetry work. See `twin/README.md`.
-- **Auto-unlock rules v2 (2026-11-09):**
+- **v1 framework finalised (2026-11-09):** `docs/v1-framework.md` is the spec for the Bluetooth 5 prototype. Key points:
+  - per-phone Inside/Outside tracking, re-evaluated at every door close from the signal step at the close (timed by the gyro), the signal path and steps
+  - gyro-only door state
+  - an at-the-door zone of about 1 m with per-door calibration
+  - free manual corrections, trusted after one confirmation; tracking continues from the corrected side
+  - relock-if-not-opened
+
+  Parts ordered (both XIAO boards, N20 1:100/1:150/1:300 with encoders), arriving around 2026-11-23. v2 = BLE 6 Channel Sounding lock plus fob on the nRF54LM20A.
+- **Auto-unlock rules v2 (2026-11-09, superseded by the v1 framework):**
   - arrival judged per phone at login
   - armed for 5 min, but unlocking only in a 30 s window at the door (Close)
   - signed home-geofence context from the phone, against relays and phones that never left

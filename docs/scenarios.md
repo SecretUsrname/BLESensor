@@ -1,5 +1,7 @@
 # Auto-unlock scenarios and limits
 
+> **Superseded by [v1-framework.md](v1-framework.md)** (2026-11-09) for the v1 design. This document describes the "rules v2" currently in the firmware core, and stays as the record of why the design changed.
+
 This document covers how the lock decides to unlock on its own, which real-life situations each rule covers, and what Bluetooth still can't handle. The numbered cases are referenced from `firmware/test_host/test_app.cpp` and the twin's scenario buttons.
 
 ## The rules (firmware `slock::App`)
