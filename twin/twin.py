@@ -71,6 +71,8 @@ PLACES = {
 
 UUID_BASE = "-14e4-4ba6-8271-a968f0b7f324"
 SERVICE_UUID = uuid.UUID("17d50001" + UUID_BASE)
+BEACON_UUID = uuid.UUID("17d5beac" + UUID_BASE)  # iBeacon proximity UUID (protocol.h)
+BEACON_RSSI_AT_1M = -59
 CHAR_UUIDS = {
     "challenge": uuid.UUID("17d50002" + UUID_BASE),
     "response": uuid.UUID("17d50003" + UUID_BASE),
@@ -899,6 +901,7 @@ class Twin:
                                       "connected": ph.connected, "summary": ph.summary(s.sim_ms)},
             "places": {k: v[0] for k, v in PLACES.items()},
             "ble_rssi_override": self.ble_rssi_override, "ble_status": self.ble_status,
+            "beacon_status": self.ble.beacon_status if self.ble is not None else "off (--no-ble)",
             "scenario": self.scenario_name, "log": list(self.log)[-100:],
         })
         return d
@@ -914,6 +917,8 @@ class BleServer:
         self.chars: dict = {}
         self.provider = None
         self.nonce = bytes(16)
+        self.beacon = None
+        self.beacon_status = "off"
 
     def _set_status(self, text: str) -> None:
         if text != self.twin.ble_status:
@@ -978,7 +983,45 @@ class BleServer:
         self.provider.start_advertising_with_parameters(ap)
         await asyncio.sleep(0.5)
         self._adv_status(self.provider.advertisement_status)
+        self._start_beacon()
         return True
+
+    def _start_beacon(self) -> None:
+        """Broadcast the lock's iBeacon next to the GATT service, as the real lock does (protocol.h).
+        iOS relaunches the app near a monitored beacon even after the app was swiped away."""
+        try:
+            import winrt.windows.devices.bluetooth.advertisement as adv
+            from winrt.windows.storage.streams import DataWriter
+        except ImportError:
+            self.beacon_status = "off: pip install winrt-Windows.Devices.Bluetooth.Advertisement"
+            self.twin.event(f"iBeacon {self.beacon_status}", "ble")
+            return
+        lid = self.twin.lock_id
+        payload = (bytes([0x02, 0x15]) + BEACON_UUID.bytes + lid[0:2] + lid[2:4]
+                   + BEACON_RSSI_AT_1M.to_bytes(1, "big", signed=True))
+        md = adv.BluetoothLEManufacturerData()
+        md.company_id = 0x004C  # Apple: the iBeacon format
+        w = DataWriter()
+        w.write_bytes(payload)
+        md.data = w.detach_buffer()
+        pub = adv.BluetoothLEAdvertisementPublisher()
+        pub.advertisement.manufacturer_data.append(md)
+
+        def changed(sender, args):
+            names = {0: "created", 1: "waiting", 2: "started", 3: "stopping", 4: "stopped", 5: "aborted"}
+            st = names.get(int(args.status), str(args.status))
+            err = f" (error {int(args.error)})" if int(args.error) != 0 else ""
+            self._from_thread(lambda: self._beacon_changed(f"{st}{err}"))
+
+        pub.add_status_changed(changed)
+        pub.start()
+        self.beacon = pub
+        major, minor = int.from_bytes(lid[0:2], "big"), int.from_bytes(lid[2:4], "big")
+        self.twin.event(f"iBeacon {BEACON_UUID} major {major} minor {minor}: starting", "ble")
+
+    def _beacon_changed(self, text: str) -> None:
+        self.beacon_status = text
+        self.twin.event(f"iBeacon: {text}", "ble")
 
     def _adv_status(self, st) -> None:
         names = {0: "created", 1: "stopped", 2: "advertising", 3: "aborted", 4: "advertising (partial data)"}

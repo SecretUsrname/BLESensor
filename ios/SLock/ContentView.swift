@@ -100,6 +100,7 @@ struct ContentView: View {
                     row("Home", home.summary)
                     row("Location permission", home.permissionText)
                     row("Motion permission", Motion.shared.permissionText)
+                    row("Lock beacon", home.beaconSummary)
                     Button(home.homeSet ? "Move home to where I am now" : "Set home to where I am now") {
                         home.setHomeHere()
                     }
@@ -112,7 +113,7 @@ struct ContentView: View {
                 } header: {
                     Text("Home")
                 } footer: {
-                    Text("Each login signs whether you're in your home area, when you last left and arrived, and whether you've been walking. The lock refuses auto-unlock if your phone says you aren't home (a relay attack) or isn't being carried. Needs \"Always\" location and Motion & Fitness access. The times stay on your phone.")
+                    Text("Each login signs whether you're in your home area, when you last left and arrived, and whether you've been walking. The lock refuses auto-unlock if your phone says you aren't home (a relay attack) or isn't being carried. Needs \"Always\" location and Motion & Fitness access. The times stay on your phone. The lock also broadcasts a beacon: coming near it wakes the app even if you swiped it away.")
                 }
 
                 Section {

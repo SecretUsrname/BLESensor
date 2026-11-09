@@ -17,19 +17,29 @@ final class HomeLocation: NSObject, ObservableObject {
     @Published private(set) var lastEntry: Date?
     @Published private(set) var lastExit: Date?
 
+    /// Near the lock: its iBeacon is in range (nil = not known yet).
+    @Published private(set) var nearLock: Bool?
+
     /// Called when anything that goes into the signed context changes (LockManager re-sends it).
     var onChange: (() -> Void)?
+    /// Called when the phone comes into range of the lock's iBeacon. iOS relaunches the app for this
+    /// even after the user swiped it away, which a Bluetooth wake-up alone doesn't survive.
+    var onLockBeacon: (() -> Void)?
 
     private let manager = CLLocationManager()
     private var settingHome = false
     private let log = EventLog.shared
     private let regionId = "slock.home"
+    private let beaconId = "slock.lock"
+    /// The lock's iBeacon proximity UUID (firmware protocol.h). Major/minor come from its lock id.
+    static let beaconUUID = UUID(uuidString: "17D5BEAC-14E4-4BA6-8271-A968F0B7F324")!
 
     private enum Keys {
         static let lat = "slock.home.lat"
         static let lon = "slock.home.lon"
         static let entry = "slock.home.lastEntry"
         static let exit = "slock.home.lastExit"
+        static let beacon = "slock.lock.beacon"  // "major/minor" being monitored
     }
 
     private override init() {
@@ -41,7 +51,7 @@ final class HomeLocation: NSObject, ObservableObject {
         _lastExit = Published(initialValue: defaults.object(forKey: Keys.exit) as? Date)
         super.init()
         manager.delegate = self
-        if let region = manager.monitoredRegions.first(where: { $0.identifier == regionId }) {
+        for region in manager.monitoredRegions where region.identifier == regionId || region.identifier == beaconId {
             manager.requestState(for: region)
         }
     }
@@ -92,6 +102,43 @@ final class HomeLocation: NSObject, ObservableObject {
             manager.requestAlwaysAuthorization()  // iOS asks "While using" first; the location request follows
         } else {
             requestFix()
+        }
+    }
+
+    /// Watch for this lock's iBeacon. Called after each login with the lock id from the challenge;
+    /// does nothing if it's already watching the same lock. Needs "Always" location permission.
+    func monitorLockBeacon(lockId: Data) {
+        guard lockId.count >= 4 else { return }
+        let b = [UInt8](lockId)
+        let major = UInt16(b[0]) << 8 | UInt16(b[1])
+        let minor = UInt16(b[2]) << 8 | UInt16(b[3])
+        let key = "\(major)/\(minor)"
+        let watching = manager.monitoredRegions.contains { $0.identifier == beaconId }
+        if watching && UserDefaults.standard.string(forKey: Keys.beacon) == key { return }
+        let region = CLBeaconRegion(uuid: Self.beaconUUID, major: major, minor: minor, identifier: beaconId)
+        region.notifyOnEntry = true
+        region.notifyOnExit = true
+        region.notifyEntryStateOnDisplay = true  // also check when the screen turns on
+        manager.startMonitoring(for: region)
+        UserDefaults.standard.set(key, forKey: Keys.beacon)
+        let note = authorization == .authorizedAlways ? "" : ": needs location \"Always\" to wake the app"
+        log.add("watching for the lock's beacon (major \(major), minor \(minor))" + note)
+    }
+
+    func stopLockBeacon() {
+        for region in manager.monitoredRegions where region.identifier == beaconId {
+            manager.stopMonitoring(for: region)
+        }
+        UserDefaults.standard.removeObject(forKey: Keys.beacon)
+        nearLock = nil
+    }
+
+    var beaconSummary: String {
+        guard UserDefaults.standard.string(forKey: Keys.beacon) != nil else { return "not set up (log in once)" }
+        switch nearLock {
+        case .some(true): return "in range"
+        case .some(false): return "out of range"
+        case .none: return "watching"
         }
     }
 
@@ -164,6 +211,12 @@ extension HomeLocation: CLLocationManagerDelegate {
     }
 
     func locationManager(_ m: CLLocationManager, didEnterRegion region: CLRegion) {
+        if region.identifier == beaconId {
+            nearLock = true
+            log.add("the lock's beacon is in range: making sure the app connects")
+            onLockBeacon?()
+            return
+        }
         guard region.identifier == regionId else { return }
         insideHome = true
         lastEntry = Date()
@@ -173,6 +226,11 @@ extension HomeLocation: CLLocationManagerDelegate {
     }
 
     func locationManager(_ m: CLLocationManager, didExitRegion region: CLRegion) {
+        if region.identifier == beaconId {
+            nearLock = false
+            log.add("the lock's beacon is out of range")
+            return
+        }
         guard region.identifier == regionId else { return }
         insideHome = false
         lastExit = Date()
@@ -182,6 +240,12 @@ extension HomeLocation: CLLocationManagerDelegate {
     }
 
     func locationManager(_ m: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
+        if region.identifier == beaconId {
+            let near: Bool? = state == .inside ? true : (state == .outside ? false : nil)
+            if near == true, nearLock != true { onLockBeacon?() }
+            nearLock = near
+            return
+        }
         guard region.identifier == regionId else { return }
         // State checks never count as an arrival: only real entries (didEnterRegion) set lastEntry.
         switch state {

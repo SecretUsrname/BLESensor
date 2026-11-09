@@ -12,7 +12,7 @@ Because it's the same C++ core that will run on the XIAO, what the twin does is 
 ```powershell
 powershell -ExecutionPolicy Bypass -File twin\build.ps1     # builds twin\build\slock_twin.dll (needs MSYS2 g++)
 & "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" -m venv twin\.venv
-twin\.venv\Scripts\python.exe -m pip install cryptography winrt-runtime winrt-Windows.Devices.Bluetooth winrt-Windows.Devices.Bluetooth.GenericAttributeProfile winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Storage.Streams
+twin\.venv\Scripts\python.exe -m pip install cryptography winrt-runtime winrt-Windows.Devices.Bluetooth winrt-Windows.Devices.Bluetooth.GenericAttributeProfile winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Storage.Streams winrt-Windows.Devices.Bluetooth.Advertisement
 ```
 
 Rebuild the DLL after changing anything in `firmware/lib/slock_core`.
@@ -68,6 +68,18 @@ By hand:
 5. Windows can't measure a connected phone's RSSI, so the twin takes RSSI from the phone's Telemetry writes, or from the slider on the page.
 
 The iOS app (next step) will do the real flow: enrol its Secure Enclave key while the page's enrolment window is open, answer challenges, report RSSI, and send commands. Enrolled keys are saved in `twin/enrolled_keys.json`. The app (v0.3) also reads the lock's event log over the Log characteristic (`…0008`).
+
+## Test: the app wakes up after being swiped away
+
+The twin broadcasts the lock's **iBeacon** next to its Bluetooth service, as the real lock does. iOS relaunches the app when the phone comes near a beacon it watches, even after you swiped the app away in the app switcher. A Bluetooth wake-up alone doesn't survive that. The header chip shows `beacon: started` when it's on air.
+
+1. Install the iOS app v0.3 (CI artifact) and pair it with the twin. Allow location **Always**, Motion & Fitness, and turn on **Notifications** in the app. After the first login the app's Home section shows **Lock beacon: in range**.
+2. **Swipe the app away** in the app switcher.
+3. Walk away from the laptop until the twin log shows `real phone disconnected`, then a bit further (30 s or so out of range lets iOS register that you left the beacon).
+4. Walk back. Expect a notification **"Near your lock"**, then the twin log shows the real phone connect and sign a v3 login, without you opening the app.
+5. Open the app afterwards and check its log (Debug → App log): `app process started (in the background, by iOS)` followed by `the lock's beacon is in range` proves iOS relaunched it.
+
+If step 4 doesn't happen, note how long you waited: iOS can take from a few seconds to about a minute to notice a beacon in the background.
 
 ## What the twin can and can't tell you
 

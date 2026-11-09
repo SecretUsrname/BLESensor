@@ -69,7 +69,10 @@ final class LockManager: NSObject, ObservableObject {
         _keyId = Published(initialValue: defaults.object(forKey: Keys.keyId) as? Int)
         _notifyInBackground = Published(initialValue: defaults.bool(forKey: Keys.notify))
         super.init()
+        let how = UIApplication.shared.applicationState == .background ? "in the background, by iOS" : "by you"
+        log.add("app process started (\(how))")
         HomeLocation.shared.onChange = { [weak self] in self?.homeContextChanged() }
+        HomeLocation.shared.onLockBeacon = { [weak self] in self?.beaconWake() }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.setNotificationCategories([UNNotificationCategory(
@@ -155,7 +158,15 @@ final class LockManager: NSObject, ObservableObject {
         }
     }
 
+    /// iOS woke (or relaunched) the app because the lock's beacon came into range: make sure a
+    /// Bluetooth connect to the lock is pending, so the login happens before you reach the door.
+    private func beaconWake() {
+        if isBackground { notify("Near your lock", "The app was woken by the lock's beacon") }
+        connectKnownOrScan()
+    }
+
     private func finishForget() {
+        HomeLocation.shared.stopLockBeacon()
         let old = peripheral
         peripheral = nil
         chars = [:]
@@ -264,6 +275,7 @@ final class LockManager: NSObject, ObservableObject {
         }
         guard peripheral != nil, chars[SLockGATT.response] != nil else { return }
         lastSignedNonce = nonce  // claim it now: the pedometer read below is asynchronous
+        HomeLocation.shared.monitorLockBeacon(lockId: lockId)
         let home = HomeLocation.shared.homeFields
 
         // Older firmware (status version 1, e.g. the digital twin before its v1 update) only knows

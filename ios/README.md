@@ -23,6 +23,7 @@ For locks running the v1 framework firmware (status packet version 2). See `docs
 - **Debug:**
   - the **lock's event log**: auto-unlocks, side changes, relocks, tamper, pairing
   - a **step test**, to measure the pedometer's delay at your door before the hardware arrives
+- **Wakes after a swipe-away:** the app watches the lock's iBeacon (location region monitoring), which iOS uses to relaunch it even after you swiped it away. Starts after the first login; the Home section shows "Lock beacon".
 - **Older firmware:** if the lock reports status version 1 (for example the twin before its update), the app falls back to the v2 login and hides side tracking.
 
 ## Home location (v0.2)

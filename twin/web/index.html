@@ -351,7 +351,7 @@ function render(s) {
   const b = $('#badge'); b.textContent = s.lock_state_name;
   b.className = 'badge ' + (['locking', 'unlocking', 'calibrating', 'homing'].includes(s.lock_state_name) ? 'moving' : s.lock_state_name);
   $('#simtime').textContent = `t = ${(s.sim_ms / 1000).toFixed(1)} s`;
-  $('#blechip').textContent = 'bluetooth: ' + s.ble_status;
+  $('#blechip').textContent = 'bluetooth: ' + s.ble_status + ' · beacon: ' + s.beacon_status;
   $('#modechip').textContent = `door: ${s.door_state_name}${s.tamper ? ' · TAMPER' : ''}`;
   $('#drive').textContent = `${s.drive_status_name}${s.stalled ? ' (stalled)' : ''}${s.pushing ? ' · pushing bolt' : ''}`;
   $('#motorbar').style.width = Math.abs(s.motor_duty) * 100 + '%';

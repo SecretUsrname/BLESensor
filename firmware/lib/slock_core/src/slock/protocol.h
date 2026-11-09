@@ -18,6 +18,11 @@
 //                                       measures RSSI itself; the digital twin on Windows can't.
 //  Log         17d50008  read, notify   count (1) | count x Event (12 bytes each, event_log.h).
 //                                       ReadLog chooses where the next read starts.
+//
+// The lock also broadcasts an iBEACON (proximity UUID kBeaconUuid, major = lock_id[0..1], minor =
+// lock_id[2..3], big-endian), alternating with its normal advertisement. iOS relaunches the app
+// when the phone comes near a beacon it monitors, even after the user swiped the app away; the
+// Bluetooth wake-up alone doesn't survive that.
 
 #include <cstdint>
 
@@ -32,6 +37,7 @@ constexpr const char* kStatusUuid    = "17d50005-14e4-4ba6-8271-a968f0b7f324";
 constexpr const char* kEnrollUuid    = "17d50006-14e4-4ba6-8271-a968f0b7f324";
 constexpr const char* kTelemetryUuid = "17d50007-14e4-4ba6-8271-a968f0b7f324";
 constexpr const char* kLogUuid       = "17d50008-14e4-4ba6-8271-a968f0b7f324";
+constexpr const char* kBeaconUuid    = "17d5beac-14e4-4ba6-8271-a968f0b7f324";  // iBeacon proximity UUID
 
 constexpr uint8_t kLogPageEvents = 14;  // 1 + 14 * 12 = 169 bytes, fits iOS's usual 185-byte MTU
 

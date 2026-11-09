@@ -12,9 +12,9 @@ namespace {
 
 // 128-bit UUIDs from slock/protocol.h, as the little-endian bytes the SoftDevice wants.
 struct Uuid128 {
-  uint8_t b[16];
+  uint8_t b[16];   // little-endian (GATT)
+  uint8_t be[16];  // big-endian (iBeacon)
   explicit Uuid128(const char* s) {
-    uint8_t be[16];
     int n = 0;
     for (const char* p = s; *p && n < 32; ++p) {
       char c = *p;
@@ -30,7 +30,7 @@ struct Uuid128 {
 
 Uuid128 u_service(protocol::kServiceUuid), u_challenge(protocol::kChallengeUuid), u_response(protocol::kResponseUuid),
     u_command(protocol::kCommandUuid), u_status(protocol::kStatusUuid), u_enroll(protocol::kEnrollUuid),
-    u_telemetry(protocol::kTelemetryUuid), u_log(protocol::kLogUuid);
+    u_telemetry(protocol::kTelemetryUuid), u_log(protocol::kLogUuid), u_beacon(protocol::kBeaconUuid);
 
 BLEService svc(u_service.b);
 BLECharacteristic ch_challenge(u_challenge.b), ch_response(u_response.b), ch_command(u_command.b),
@@ -39,6 +39,10 @@ BLECharacteristic ch_challenge(u_challenge.b), ch_response(u_response.b), ch_com
 constexpr size_t kChallengeLen = kLockIdLen + kNonceLen;
 constexpr size_t kStatusLen = sizeof(protocol::StatusPacket);
 constexpr size_t kLogLen = 1 + protocol::kLogPageEvents * sizeof(Event);
+
+BLEBeacon g_beacon;
+bool g_beacon_on_air = false;
+uint32_t g_adv_switch_ms = 0;
 
 SemaphoreHandle_t g_mutex = nullptr;
 App* g_app = nullptr;
@@ -111,14 +115,35 @@ void BleLink::begin(App& app, const uint8_t* lock_id) {
   writable(ch_telemetry, CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP, 1);
   readable(ch_log, CHR_PROPS_READ, kLogLen);
 
-  // Advertise the service UUID: iOS background scanning and the app's pending connect look for it.
-  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
-  Bluefruit.Advertising.addService(svc);
+  // Two adverts, alternated every kAdvSwitchMs by poll():
+  //  * the service UUID (iOS scans for it when pairing; the app's pending connect finds the lock by
+  //    its address, so either advert works for reconnecting), and
+  //  * an iBeacon, so iOS relaunches the app near the door even after it was swiped away.
+  // The scan response always carries the name and the service UUID.
+  g_beacon.setUuid(u_beacon.be);
+  g_beacon.setMajorMinor(static_cast<uint16_t>((lock_id[0] << 8) | lock_id[1]),
+                         static_cast<uint16_t>((lock_id[2] << 8) | lock_id[3]));
+  g_beacon.setRssiAt1m(kBeaconRssiAt1m);
   Bluefruit.ScanResponse.addName();
+  Bluefruit.ScanResponse.addService(svc);
   Bluefruit.Advertising.restartOnDisconnect(true);
-  Bluefruit.Advertising.setInterval(32, 244);  // 20 ms fast, then 152.5 ms (units of 0.625 ms)
-  Bluefruit.Advertising.setFastTimeout(30);
-  Bluefruit.Advertising.start(0);
+  Bluefruit.Advertising.setInterval(kAdvInterval, kAdvInterval);
+  set_advert(false);
+}
+
+// Switch which advert is on air. Both are connectable.
+void BleLink::set_advert(bool beacon) {
+  Bluefruit.Advertising.stop();
+  Bluefruit.Advertising.clearData();
+  if (beacon) {
+    Bluefruit.Advertising.setBeacon(g_beacon);  // adds the flags too
+  } else {
+    Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+    Bluefruit.Advertising.addService(svc);
+  }
+  g_beacon_on_air = beacon;
+  g_adv_switch_ms = millis();
+  if (Bluefruit.connected() < App::kMaxLinks) Bluefruit.Advertising.start(0);
 }
 
 void BleLink::set_challenge(Peer& p, const uint8_t* nonce, bool notify) {
@@ -229,6 +254,7 @@ void BleLink::push_status(Peer& p, bool force) {
 }
 
 void BleLink::poll(Millis now) {
+  if (kBeaconEnabled && now - g_adv_switch_ms >= kAdvSwitchMs) set_advert(!g_beacon_on_air);
   Guard g;
   for (int i = 0; i < App::kMaxLinks; ++i) {
     Peer& p = peers()[i];

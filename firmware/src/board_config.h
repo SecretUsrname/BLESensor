@@ -57,5 +57,11 @@ constexpr int8_t kTxPowerDbm = 0;        // RSSI references are calibrated per d
 // there's one variable less; turn on once the app works end to end.
 constexpr bool kRequireEncryption = false;
 constexpr uint32_t kRssiPeriodMs = 100;  // the lock samples each phone's RSSI at 10 Hz
+// Advertising: the service advert and an iBeacon take turns (protocol.h). The beacon lets iOS
+// relaunch the app near the door even after the user swiped it away.
+constexpr bool kBeaconEnabled = true;
+constexpr uint32_t kAdvSwitchMs = 1000;   // each advert stays on air this long
+constexpr uint16_t kAdvInterval = 160;    // 100 ms (units of 0.625 ms)
+constexpr int8_t kBeaconRssiAt1m = -59;   // [TUNE] measured power at 1 m, for iOS distance estimates
 
 }  // namespace board

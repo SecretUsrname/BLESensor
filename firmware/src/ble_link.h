@@ -42,6 +42,7 @@ class BleLink {
   static Peer* find(uint16_t conn);
   static Peer* peers();
   void set_challenge(Peer& p, const uint8_t* nonce, bool notify);
+  static void set_advert(bool beacon);
   void push_status(Peer& p, bool force);
 };
 
