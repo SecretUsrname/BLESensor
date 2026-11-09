@@ -6,7 +6,7 @@ Firmware for the Seeed XIAO nRF52840 Sense. All logic lives in a **portable core
 
 | Part | State |
 |---|---|
-| Portable core (v1 framework, `docs/v1-framework.md`): drive control with motor auto-detect, lock state machine, auth with login v3, gyro door estimator, per-phone side tracking, unlock rule v3, relocking, event log, storage interface | Done; **compiles cleanly with `-Werror`**. The new door, side and scenario tests have **not been run yet**: Smart App Control on the dev PC now blocks unsigned test binaries. They run in CI (`firmware-tests` workflow). |
+| Portable core (v1 framework, `docs/v1-framework.md`): drive control with motor auto-detect, lock state machine, auth with login v3, gyro door estimator, per-phone side tracking, unlock rule v3, relocking, event log, storage interface | Done; **63 host tests passing** in CI (`firmware-tests` workflow), compiled with `-Werror`. Smart App Control on the dev PC blocks freshly built test binaries, so CI is where they run. |
 | Board layer `src/`: HAL for motor, encoder, halls, INA219, battery; USB-serial bench console | **Compiles** cleanly (7.8% flash, 3.4% RAM); not yet run on hardware |
 | Flash persistence: core saves keys, settings and motor calibration through `hal::Storage` | Board implementation TODO |
 | BLE GATT service (`slock/protocol.h` layout) | TODO |
