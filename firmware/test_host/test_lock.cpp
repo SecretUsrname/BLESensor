@@ -5,7 +5,6 @@
 
 using namespace slock;
 using fakes::FakeBattery;
-using fakes::FakeDoor;
 
 namespace {
 
@@ -27,12 +26,10 @@ void run(LockController& lc, SimPlant& p, Millis& now, uint32_t ms) {
 struct Rig {
   SimPlant p;
   FakeBattery bat;
-  FakeDoor door;
   DriveController drive{p, p, p, p, cfg_for(p)};
   LockController lc;
   Millis now = 0;
-  explicit Rig(const LockConfig& cfg = LockConfig{}, bool with_door = false)
-      : lc(drive, bat, with_door ? &door : nullptr, cfg) {
+  explicit Rig(const LockConfig& cfg = LockConfig{}) : lc(drive, bat, cfg) {
     lc.begin(now);
   }
   void calibrate() {
@@ -95,7 +92,7 @@ TEST(boot_waits_for_bolt_at_an_end_then_homes) {
 
   DriveController d2(r.p, r.p, r.p, r.p, cfg_for(r.p));
   d2.set_calibration(cal);
-  LockController lc2(d2, r.bat, nullptr, LockConfig{});
+  LockController lc2(d2, r.bat, LockConfig{});
   lc2.begin(r.now);
   CHECK(lc2.state() == LockState::NeedsHoming);
   run(lc2, r.p, r.now, 200);
@@ -105,22 +102,6 @@ TEST(boot_waits_for_bolt_at_an_end_then_homes) {
   run(lc2, r.p, r.now, 3000);
   CHECK(d2.homed());
   CHECK(lc2.state() == LockState::Locked);
-}
-
-TEST(auto_relock_waits_for_door_closed) {
-  LockConfig cfg;
-  cfg.auto_relock_ms = 5000;
-  Rig r(cfg, /*with_door=*/true);
-  r.calibrate();
-  r.door.is_closed = false;
-  CHECK(r.lc.request_unlock(r.now) == Request::Accepted);
-  run(r.lc, r.p, r.now, 10000);
-  CHECK(r.lc.state() == LockState::Unlocked);  // door open the whole time: never relock
-  r.door.is_closed = true;
-  run(r.lc, r.p, r.now, 4000);
-  CHECK(r.lc.state() == LockState::Unlocked);  // not yet 5 s closed
-  run(r.lc, r.p, r.now, 3000);
-  CHECK(r.lc.state() == LockState::Locked);
 }
 
 TEST(jam_stays_reported_until_bolt_reaches_an_end) {

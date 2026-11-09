@@ -60,15 +60,17 @@ void Session::build_message_v2(const uint8_t* lock_id, const uint8_t* nonce, con
 PhoneContext Session::decode_context(const uint8_t* ctx) {
   PhoneContext c;
   c.provided = true;
+  c.version = 2;
   c.has_home = (ctx[0] & 1) != 0;
   c.inside_home = (ctx[0] & 2) != 0;
-  c.minutes_since_entry = ctx[1];
+  c.minutes_since_entry = ctx[1] == 255 ? kNoMinutes : ctx[1];
   return c;
 }
 
-const uint8_t* Session::new_challenge() {
+const uint8_t* Session::new_challenge(bool keep_auth) {
   rng_->fill(nonce_, kNonceLen);
   have_nonce_ = true;
+  if (keep_auth && auth_) return nonce_;
   auth_ = false;
   key_id_ = -1;
   return nonce_;
@@ -138,6 +140,52 @@ void Session::end() {
   key_id_ = -1;
   context_ = PhoneContext{};
   std::memset(nonce_, 0, sizeof(nonce_));
+}
+
+}  // namespace slock
+
+namespace slock {
+
+namespace {
+uint16_t le16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
+uint32_t le32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
+}
+}  // namespace
+
+void Session::build_message_v3(const uint8_t* lock_id, const uint8_t* nonce, const uint8_t* ctx, uint8_t* out) {
+  std::memcpy(out, "SLK3", 4);
+  std::memcpy(out + 4, lock_id, kLockIdLen);
+  std::memcpy(out + 4 + kLockIdLen, nonce, kNonceLen);
+  std::memcpy(out + 4 + kLockIdLen + kNonceLen, ctx, kContextLenV3);
+}
+
+PhoneContext Session::decode_context_v3(const uint8_t* ctx) {
+  PhoneContext c;
+  c.provided = true;
+  c.version = 3;
+  c.has_home = (ctx[0] & 1) != 0;
+  c.inside_home = (ctx[0] & 2) != 0;
+  c.has_steps = (ctx[0] & 4) != 0;
+  c.minutes_since_entry = le16(ctx + 1);
+  c.minutes_since_exit = le16(ctx + 3);
+  c.steps = le32(ctx + 5);
+  c.seconds_since_step = le16(ctx + 9);
+  return c;
+}
+
+AuthResult Session::respond_v3(uint8_t key_id, const uint8_t* ctx, const uint8_t* sig, Millis now) {
+  if (guard().failures >= cfg_.max_failures && since(now, guard().locked_at) < cfg_.lockout_ms) {
+    return AuthResult::LockedOut;
+  }
+  if (!have_nonce_) return AuthResult::NoChallenge;
+  have_nonce_ = false;
+  uint8_t msg[kAuthMsgLenV3];
+  build_message_v3(lock_id_, nonce_, ctx, msg);
+  AuthResult r = check(key_id, msg, kAuthMsgLenV3, sig, now);
+  if (r == AuthResult::Ok) context_ = decode_context_v3(ctx);
+  return r;
 }
 
 }  // namespace slock

@@ -26,16 +26,19 @@ constexpr uint8_t kBattery = A2;
 constexpr float kBatteryDivider = (100.f + 47.f) / 47.f;  // [UNVERIFIED] match the resistors fitted
 constexpr float kAdcRefMv = 3600.f;                       // nRF52 default analog reference
 
-// Optional reed switch to GND on the door frame (closed door = magnet near = LOW).
+// Optional reed switch to GND on the door frame (closed door = magnet near = LOW). Validation only:
+// ground truth while testing the gyro door estimator.
 constexpr bool kHasDoorSensor = false;
 constexpr uint8_t kDoorReed = D8;
 
 // INA219 current sensor on I2C (D4 = SDA, D5 = SCL), default address.
 constexpr uint8_t kIna219Addr = 0x40;
 
-// Expected encoder counts per output-gear degree:
+// Gearmotors on hand (all N20 with a hall encoder). Calibration auto-detects which one is fitted
+// from the measured encoder counts per output-gear degree:
 // 7 PPR magnetic encoder x 4 (quadrature) x gearbox ratio x spur ratio (40/12) / 360.
-constexpr float kGearboxRatio = 150.f;  // [UNVERIFIED] the N20 actually bought
-constexpr float kNominalCpd = 7.f * 4.f * kGearboxRatio * (40.f / 12.f) / 360.f;
+constexpr float kGearboxRatios[] = {100.f, 150.f, 300.f};  // reported as motor 1, 2, 3
+constexpr int kMotorCount = 3;
+constexpr float motor_cpd(int i) { return 7.f * 4.f * kGearboxRatios[i] * (40.f / 12.f) / 360.f; }
 
 }  // namespace board

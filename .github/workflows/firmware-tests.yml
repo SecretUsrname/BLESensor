@@ -1,0 +1,31 @@
+# Runs the firmware core's host tests (door estimator, side tracking, unlock rules, scenarios) on
+# Linux, and checks that the XIAO nRF52840 firmware still compiles. Free for public repositories.
+name: Firmware tests
+
+on:
+  push:
+    paths: ["firmware/**", ".github/workflows/firmware-tests.yml"]
+  pull_request:
+    paths: ["firmware/**"]
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host tests
+        run: bash firmware/run_tests.sh
+
+  board-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install platformio==6.2.0
+      - name: Build XIAO nRF52840 firmware
+        working-directory: firmware
+        run: pio run

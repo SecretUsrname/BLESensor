@@ -41,11 +41,12 @@ class Battery {
   virtual uint16_t millivolts() = 0;
 };
 
-// Optional door-closed sensor (reed switch on the frame).
-class DoorSensor {
+// Persistent storage (flash on the board, a file in the twin). Records are small fixed blobs.
+class Storage {
  public:
-  virtual ~DoorSensor() = default;
-  virtual bool closed() = 0;
+  virtual ~Storage() = default;
+  virtual bool load(uint16_t id, void* buf, size_t len) = 0;  // false if missing or a different size
+  virtual bool save(uint16_t id, const void* buf, size_t len) = 0;
 };
 
 // Must be a cryptographic RNG on the device (nRF52840 has a hardware TRNG).

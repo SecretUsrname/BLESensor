@@ -6,12 +6,12 @@ Firmware for the Seeed XIAO nRF52840 Sense. All logic lives in a **portable core
 
 | Part | State |
 |---|---|
-| Portable core: drive control, lock state machine, auth session, presence, unlock policy, intent detector | Done; **30 host tests passing** |
+| Portable core (v1 framework, `docs/v1-framework.md`): drive control with motor auto-detect, lock state machine, auth with login v3, gyro door estimator, per-phone side tracking, unlock rule v3, relocking, event log, storage interface | Done; **compiles cleanly with `-Werror`**. The new door, side and scenario tests have **not been run yet**: Smart App Control on the dev PC now blocks unsigned test binaries. They run in CI (`firmware-tests` workflow). |
 | Board layer `src/`: HAL for motor, encoder, halls, INA219, battery; USB-serial bench console | **Compiles** cleanly (7.8% flash, 3.4% RAM); not yet run on hardware |
-| Flash persistence of calibration and keys | TODO |
+| Flash persistence: core saves keys, settings and motor calibration through `hal::Storage` | Board implementation TODO |
 | BLE GATT service (`slock/protocol.h` layout) | TODO |
 | P-256 signature check (micro-ecc) and hardware RNG | TODO |
-| IMU feed into the intent detector | TODO |
+| IMU feed (gyro into `App::on_imu`, handle turns into `App::on_intent`) | TODO |
 | Low-power sleep | TODO |
 
 ## Run the tests
@@ -41,19 +41,23 @@ The board is `xiaoblesense_adafruit` (Adafruit nRF52 core), not `xiaoblesense` (
 ```
 firmware/
   platformio.ini            board build (XIAO nRF52840 Sense via the maxgerhardt nordicnrf52 fork)
-  run_tests.ps1             host test build with g++
+  run_tests.ps1, run_tests.sh   host test build with g++
   lib/slock_core/src/slock/ portable core
-    hal.h                   hardware interfaces (Motor, Encoder, HubSensor, CurrentSense, Battery, DoorSensor, Random)
+    hal.h                   hardware interfaces (Motor, Encoder, HubSensor, CurrentSense, Battery, Storage, Random)
     angle.h                 hub angle from two linear halls; progress 0 = locked, 1 = unlocked
-    drive.*                 lost-motion drive: calibrate, home, unlock, lock, park
-    lock_controller.*       top-level state machine, low-battery rule, manual-turn tracking, auto-relock
-    session.*               challenge-response auth, key store, replay protection, lockout
-    presence.*              BLE RSSI zones and "genuine arrival" detection
-    policy.h                when to auto-unlock (mode A: approach only; mode B: approach + intent)
-    intent.*                IMU burst detector (placeholder until Phase 1 data)
+    drive.*                 lost-motion drive: calibrate (with motor auto-detect), home, unlock, lock, park
+    lock_controller.*       top-level state machine, low-battery rule, manual-turn tracking
+    session.*               challenge-response auth (login v1-v3, signed home diary + steps), key store, lockout
+    presence.*              BLE RSSI zones and the ~1 m "at the door" zone
+    door.*                  gyro-only door estimator: open/closed, trusted closes, tamper
+    side.*                  per-phone Inside/Outside/Unknown tracking, continuity rule, door calibration
+    event_log.*             about 100 events for the Log characteristic
+    policy.h                the 7-condition auto-unlock rule
+    app.*                   glue: links, logins, sides, door, relocking, commands, status, storage
+    intent.*                handle-turn burst detector (placeholder until real door data)
     protocol.h              GATT UUIDs, opcodes, status packet
   src/                      board layer (HAL implementations + bench console)
-  test_host/                host tests and SimPlant, the simulated mechanism
+  test_host/                host tests; SimPlant (mechanism) and DoorSim (door + gyro)
 ```
 
 ## Key behaviour (what the tests pin down)
@@ -63,16 +67,13 @@ firmware/
 - **Homing after power loss never moves the bolt.** It refuses to run while the bolt is mid-travel, and waits until someone turns the bolt to an end.
 - **Locking is refused on low battery; unlocking never is.** This addresses the brown-out-mid-lock risk.
 - **Knob and key turns are tracked.** A jam stays reported until the bolt is seen at an end.
-- **Auto-relock** (off by default) only counts down while the door sensor reports closed.
 - **Authentication:**
   - Nonces are single-use, so a recorded answer can't be replayed.
   - Signatures are bound to the lock id, so an answer for one lock doesn't open another.
   - After 5 failures, all attempts are locked out for 60 s.
   - A session expires after 2 minutes and ends on disconnect.
-- **Arrival:**
-  - Only a phone that was disconnected for at least 60 s and then reconnects arms the lock.
-  - A phone sitting inside the flat never arms it, however strong its signal.
-  - The arming window lasts 30 s and is used up by one unlock.
+- **Door (gyro only):** a slam or a net-zero return is a trusted close; no drift over 10 min at rest; 50 soft cycles all trusted; ajar is not trusted; knocks aren't closes; rotation while locked is tamper.
+- **Sides and unlocking:** one test per scenario row in `docs/v1-framework.md` section 12 (`test_app.cpp`), plus relock-if-not-opened, never locking into an open door, strict mode, the calibration wizard, reboot, revocation and the event log.
 
 ## Bench bring-up (once the parts arrive)
 

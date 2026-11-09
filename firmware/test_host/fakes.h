@@ -2,6 +2,8 @@
 // Shared fakes for host tests.
 
 #include <cstring>
+#include <map>
+#include <vector>
 
 #include "slock/hal.h"
 #include "slock/session.h"
@@ -33,9 +35,20 @@ struct FakeBattery : slock::hal::Battery {
   uint16_t millivolts() override { return mv; }
 };
 
-struct FakeDoor : slock::hal::DoorSensor {
-  bool is_closed = true;
-  bool closed() override { return is_closed; }
+// In-memory stand-in for flash.
+struct MemStorage : slock::hal::Storage {
+  std::map<uint16_t, std::vector<uint8_t>> rec;
+  bool load(uint16_t id, void* buf, size_t len) override {
+    auto it = rec.find(id);
+    if (it == rec.end() || it->second.size() != len) return false;
+    std::memcpy(buf, it->second.data(), len);
+    return true;
+  }
+  bool save(uint16_t id, const void* buf, size_t len) override {
+    const uint8_t* p = static_cast<const uint8_t*>(buf);
+    rec[id] = std::vector<uint8_t>(p, p + len);
+    return true;
+  }
 };
 
 }  // namespace fakes

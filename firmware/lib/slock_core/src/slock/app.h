@@ -1,38 +1,43 @@
 #pragma once
-// Application glue: BLE connections, authentication, arrival detection, the unlock policy and the
-// lock state machine. The board's BLE layer and the PC digital twin both drive this class.
+// Application glue for the v1 framework (docs/v1-framework.md): BLE connections, authentication,
+// per-phone side tracking, the gyro door estimator, the unlock rule, relocking and the event log.
+// The board's BLE layer and the PC digital twin both drive this class.
 //
-// Unlock rules (see docs/scenarios.md for why each exists):
-//  * ARRIVAL is judged per phone, at its first login on a connection: the phone (its key) must have
-//    been disconnected for at least min_away_ms. Renewed logins on the same connection never count.
-//  * An arrival stays ARMED for up to armed_ms while the phone stays connected.
-//  * The unlock WINDOW opens only when the armed phone reaches the Close zone, lasts door_window_ms,
-//    and closes as soon as the phone leaves Close (walking past the door disarms nothing, but
-//    can't unlock either).
-//  * If the phone signed HOME CONTEXT and has a home geofence, it must say it is inside and entered
-//    within max_minutes_since_home_entry. This defeats relays (your phone isn't home) and phones
-//    that never left (entered hours ago). require_home_context also refuses phones without it.
-//  * Several phones can be connected; each is judged on its own.
+// Auto-unlock (section 8) for a connected phone needs ALL of: logged in, side Outside (and no side
+// decision pending), at the door (~1 m), signs "inside home area", carried recently (signed steps),
+// the handle turned, and the bolt locked. When a phone reaches the door, and when the door opens,
+// the lock asks it for fresh signed context.
+//
+// Relocking (section 9): after an auto-unlock, relock after relock_unopened_ms if the door wasn't
+// opened. After a trusted close, relock after relock_after_close_ms. Never lock into a door that is
+// known to be open.
 
+#include "door.h"
+#include "event_log.h"
 #include "lock_controller.h"
 #include "policy.h"
 #include "presence.h"
 #include "protocol.h"
 #include "session.h"
+#include "side.h"
 
 namespace slock {
 
 struct AppConfig {
-  UnlockMode mode = UnlockMode::ApproachAndIntent;
-  uint32_t intent_hold_ms = 1500;          // a handle touch stays valid this long
-  bool require_home_context = false;       // refuse auto-unlock for phones that don't report home context
-  uint8_t max_minutes_since_home_entry = 10;
+  bool strict = true;                     // refuse phones that don't sign home context and steps
+  uint32_t intent_hold_ms = 1500;         // a handle turn stays valid this long
+  uint32_t carried_s = 30;                // "carried recently": a step within this many seconds
+  uint32_t relock_unopened_ms = 15000;    // after an auto-unlock, if the door isn't opened
+  uint32_t relock_after_close_ms = 3000;  // after a trusted close; 0 = off
+  uint32_t refresh_min_ms = 3000;         // ask a phone for fresh context at most this often
   PresenceConfig presence;
   SessionConfig session;
+  DoorConfig door;
+  SideConfig side;
 };
 
 enum class CmdResult : uint8_t {
-  Ok, NotAuthenticated, BadCommand, Busy, NotReady, AlreadyThere, LowBattery, NotAllowed
+  Ok, NotAuthenticated, BadCommand, Busy, NotReady, AlreadyThere, LowBattery, NotAllowed, DoorOpen
 };
 
 // Snapshot of one connection, for status packets, the twin and tests.
@@ -43,22 +48,29 @@ struct LinkInfo {
   bool authenticated = false;
   Zone zone = Zone::Gone;
   float rssi = -127.f;
-  bool armed = false;
-  uint32_t armed_ms_left = 0;
+  float fast_rssi = -127.f;
   bool at_door = false;
   PhoneContext context;
-  bool context_ok = false;
+  bool home_ok = false;
+  bool carried = false;
+  Side side = Side::Unknown;
+  SideReason side_reason = SideReason::Boot;
+  bool side_pending = false;
+  bool ready = false;         // would unlock on a handle turn (if locked)
 };
+
+// Storage record ids.
+enum : uint16_t { kStoreKeys = 1, kStoreSettings = 2, kStoreDriveCal = 3 };
 
 class App {
  public:
   static constexpr int kMaxLinks = 3;
 
   App(LockController& lock, KeyStore& keys, Verifier& verifier, hal::Random& rng, hal::Battery& battery,
-      const uint8_t* lock_id, const AppConfig& cfg);
+      const uint8_t* lock_id, const AppConfig& cfg, hal::Storage* storage = nullptr);
 
-  void begin(Millis now);
-  void tick(Millis now);  // call every 1-5 ms
+  void begin(Millis now);  // loads storage, every phone Unknown, homes the drive
+  void tick(Millis now);   // call every 1-5 ms
 
   // BLE link events. conn = the BLE stack's connection handle (any value, unique while connected).
   const uint8_t* on_connect(uint16_t conn, Millis now);  // challenge nonce to publish, or nullptr if full
@@ -66,21 +78,27 @@ class App {
   AuthResult on_auth_response(uint16_t conn, const uint8_t* data, size_t len, Millis now);
   CmdResult on_command(uint16_t conn, const uint8_t* data, size_t len, Millis now);
   void on_rssi(uint16_t conn, int8_t dbm, Millis now);
-  // A fresh challenge to publish on this link (login renewal or Rechallenge), else nullptr.
+  // A fresh challenge to publish on this link (renewal, fresh context, Rechallenge), else nullptr.
   const uint8_t* take_new_challenge(uint16_t conn);
   int on_enroll(const uint8_t* pubkey, size_t len, Millis now);  // new key id, or -1
+  // Log characteristic value for this link: count | events. Advances the link's read cursor.
+  size_t log_page(uint16_t conn, uint8_t* out, size_t cap);
 
   // Physical inputs
-  void on_intent(Millis now);                     // IntentDetector fired
+  void on_intent(Millis now);  // handle turn detected
+  // IMU sample: hinge-axis rate (deg/s, + = opening) and accelerometer deviation (milli-g).
+  void on_imu(float rate_dps, float accel_dev_mg, Millis now);
   void open_enrollment(Millis now, uint32_t ms);  // e.g. after a knob gesture on the lock
 
   bool enrollment_open(Millis now) const;
   bool connected(uint16_t conn) const { return find(conn) != nullptr; }
   LinkInfo link_info(uint16_t conn, Millis now) const;
   protocol::StatusPacket status(uint16_t conn, Millis now) const;
-  UnlockMode mode() const { return cfg_.mode; }
-  bool set_mode(UnlockMode m);  // false if not allowed (approach-only needs a door sensor + auto-relock)
   AppConfig& config() { return cfg_; }
+  const DoorEstimator& door() const { return door_; }
+  const DoorCalibration& door_calibration() const { return door_cal_; }
+  const SideTracker& sides() const { return sides_; }
+  const EventLog& log() const { return log_; }
   uint32_t auto_unlocks() const { return auto_unlocks_; }
 
  private:
@@ -91,12 +109,13 @@ class App {
     ZoneTracker zones;
     int key = -1;
     bool was_auth = false;
+    bool logged_in_once = false;
     const uint8_t* fresh = nullptr;
-    bool arrival_checked = false;
-    bool armed = false;
-    Millis armed_at = 0;
-    bool in_close = false;
-    Millis close_at = 0;
+    Millis ctx_at = 0;          // when the current context was signed
+    bool refreshed = false;
+    Millis refresh_at = 0;
+    bool was_at_door = false;
+    uint32_t log_cursor = 0;
     CmdResult last_cmd = CmdResult::Ok;
     AuthResult last_auth = AuthResult::NoChallenge;
   };
@@ -104,24 +123,32 @@ class App {
   Link* find(uint16_t conn);
   const Link* find(uint16_t conn) const;
   void reset_link(Link& l);
+  bool key_on_other_link(const Link& l, int key) const;
   void on_authenticated(Link& l, Millis now);
-  bool at_door(const Link& l, Millis now) const;
-  bool context_ok(const PhoneContext& c) const;
-  bool approach_only_allowed() const;
+  void refresh(Link& l, Millis now);
+  PolicyInputs inputs(const Link& l, Millis now) const;
+  bool home_ok(const PhoneContext& c) const;
+  bool carried(const Link& l, Millis now) const;
+  bool door_known_open() const;
+  void door_closed(Millis at, bool trusted, Millis now);
+  void watch_bolt(Millis now);
+  void save_keys();
+  void save_settings();
 
   LockController& lock_;
   KeyStore& keys_;
   Verifier& verifier_;
   hal::Random& rng_;
   hal::Battery& battery_;
+  hal::Storage* storage_;
   uint8_t lock_id_[kLockIdLen];
   AppConfig cfg_;
   AuthGuard guard_;
   Link links_[kMaxLinks];
-
-  Millis boot_at_ = 0;
-  bool seen_[KeyStore::kCapacity] = {};       // key has disconnected at least once since boot
-  Millis last_down_[KeyStore::kCapacity] = {};
+  DoorEstimator door_;
+  DoorCalibration door_cal_;
+  SideTracker sides_;
+  EventLog log_;
 
   bool intent_pending_ = false;
   Millis intent_at_ = 0;
@@ -130,6 +157,16 @@ class App {
   uint32_t enroll_ms_ = 0;
   int last_enrolled_ = -1;
   uint32_t auto_unlocks_ = 0;
+
+  bool relock_unopened_ = false;
+  Millis relock_unopened_at_ = 0;
+  bool relock_closed_ = false;
+  Millis relock_closed_at_ = 0;
+
+  LockState last_end_ = LockState::Uncalibrated;  // last Locked/Unlocked seen
+  bool own_move_ = false;                          // a drive operation ran since then
+  LockState last_state_ = LockState::Uncalibrated;
+  bool cal_saved_ = false;
 };
 
 }  // namespace slock

@@ -256,7 +256,22 @@ bool DriveController::compute_calibration() {
   int32_t span = c.unlock_dir * (e_unlock - e_lock);
   if (span <= 0) return false;
   c.cpd = static_cast<float>(span) / (travel + cfg_.slot_span_deg);
-  if (cfg_.nominal_cpd > 0.f && std::fabs(c.cpd / cfg_.nominal_cpd - 1.f) > cfg_.cpd_tolerance) return false;
+  if (cfg_.nominal_cpd > 0.f) {
+    if (std::fabs(c.cpd / cfg_.nominal_cpd - 1.f) > cfg_.cpd_tolerance) return false;
+  } else {
+    float best = cfg_.cpd_tolerance;
+    bool any = false;
+    for (int i = 0; i < DriveConfig::kMaxMotors; ++i) {
+      if (cfg_.motor_cpd[i] <= 0.f) continue;
+      any = true;
+      float err = std::fabs(c.cpd / cfg_.motor_cpd[i] - 1.f);
+      if (err <= best) {
+        best = err;
+        c.motor = static_cast<uint8_t>(i + 1);
+      }
+    }
+    if (any && c.motor == 0) return false;  // matches none of the motors we know
+  }
 
   c.stall_span = span;
   c.valid = true;

@@ -2,15 +2,14 @@
 
 namespace slock {
 
-LockController::LockController(DriveController& drive, hal::Battery& battery, hal::DoorSensor* door,
-                               const LockConfig& cfg)
-    : drive_(drive), battery_(battery), door_(door), cfg_(cfg) {}
+LockController::LockController(DriveController& drive, hal::Battery& battery, const LockConfig& cfg)
+    : drive_(drive), battery_(battery), cfg_(cfg) {}
 
 void LockController::set_state(LockState s, Millis now) {
   if (s == state_) return;
   state_ = s;
   ++changes_;
-  if (s == LockState::Unlocked) relock_ref_ = now;
+  (void)now;
 }
 
 LockState LockController::classify() {
@@ -112,19 +111,6 @@ void LockController::tick(Millis now) {
   if (state_ == LockState::Jammed && seen == LockState::Between) return;
 
   set_state(seen, now);  // picks up knob and key turns
-  auto_relock(now);
-}
-
-void LockController::auto_relock(Millis now) {
-  if (cfg_.auto_relock_ms == 0 || state_ != LockState::Unlocked) return;
-  if (door_ != nullptr && !door_->closed()) {
-    relock_ref_ = now;  // restart the countdown while the door is open
-    return;
-  }
-  if (since(now, relock_ref_) >= cfg_.auto_relock_ms) {
-    relock_ref_ = now;  // don't retry every poll if the lock is refused (e.g. low battery)
-    request_lock(now);
-  }
 }
 
 }  // namespace slock

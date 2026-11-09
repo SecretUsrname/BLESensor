@@ -30,6 +30,10 @@ struct DriveConfig {
   uint32_t step_timeout_ms = 4000;
   float slot_span_deg = 102.f;      // lug-centre span of the gear's arc slot (CAD: travel + 2 * deadband)
   float nominal_cpd = 0.f;          // expected encoder counts per output-gear degree; 0 = don't check
+  // Motor auto-detect: nominal cpd of each gearmotor that may be fitted (e.g. N20 1:100, 1:150,
+  // 1:300). Used when nominal_cpd is 0: calibration picks the closest one within cpd_tolerance.
+  static constexpr int kMaxMotors = 4;
+  float motor_cpd[kMaxMotors] = {};
   float cpd_tolerance = 0.25f;      // measured cpd must be within +-25% of nominal
   float min_travel_deg = 45.f;      // bolt travel seen by the hub sensor must exceed this
   float end_tolerance = 0.12f;      // hub progress within this of 0 or 1 counts as "at that end"
@@ -43,6 +47,7 @@ struct Calibration {
   float hub_locked = 0.f;           // hub angle (deg) at the locked end
   float hub_unlocked = 0.f;         // hub angle (deg) at the unlocked end
   int32_t stall_span = 0;           // encoder counts between the lock-push and unlock-push stalls
+  uint8_t motor = 0;                // detected motor: index into DriveConfig::motor_cpd + 1, 0 = not detected
 };
 
 enum class DriveOp : uint8_t { None, Calibrate, Home, Unlock, Lock, Park };

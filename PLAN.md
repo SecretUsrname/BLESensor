@@ -132,6 +132,11 @@ All of it can be built and tested **without the mechanism**, using an ESP32 dev 
   - relock-if-not-opened
 
   Parts ordered (both XIAO boards, N20 1:100/1:150/1:300 with encoders), arriving around 2026-11-23. v2 = BLE 6 Channel Sounding lock plus fob on the nRF54LM20A.
+- **v1 firmware core implemented (2026-11-09):**
+  - Done: gyro door estimator, side tracker, login v3, policy v3, relocking, event log, storage interface and motor auto-detect, all in `firmware/lib/slock_core`. Rules v2 are removed. Protocol: status v2 (30 bytes), Log characteristic, SetSide / DoorCal / SetStrict / ReadLog.
+  - Tests: door and scenario tests written. They compile with `-Werror`, and the board firmware builds.
+  - Not yet run: Windows Smart App Control started blocking freshly built binaries, so the tests are to run in the `firmware-tests` CI workflow.
+  - Still to do (spec section 14): the twin (`twin_api.cpp` still uses the rules-v2 API and won't build), the iOS app, and the board BLE/IMU/flash layer.
 - **Auto-unlock rules v2 (2026-11-09, superseded by the v1 framework):**
   - arrival judged per phone at login
   - armed for 5 min, but unlocking only in a 30 s window at the door (Close)

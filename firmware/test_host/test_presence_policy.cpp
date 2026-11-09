@@ -10,23 +10,23 @@ TEST(zones_use_hysteresis) {
   cfg.ema_alpha = 1.f;  // no smoothing, to test thresholds exactly
   ZoneTracker z(&cfg);
   CHECK(z.zone() == Zone::Gone);
-  z.on_rssi(-50);
+  z.on_rssi(-50, -60);
   CHECK(z.zone() == Zone::Gone);  // ignored while disconnected
   z.reset();
   CHECK(z.zone() == Zone::Far);
-  z.on_rssi(-90);
+  z.on_rssi(-90, -60);
   CHECK(z.zone() == Zone::Far);
-  z.on_rssi(-78);
+  z.on_rssi(-78, -60);
   CHECK(z.zone() == Zone::Near);
-  z.on_rssi(-81);
+  z.on_rssi(-81, -60);
   CHECK(z.zone() == Zone::Near);  // within hysteresis
-  z.on_rssi(-83);
+  z.on_rssi(-83, -60);
   CHECK(z.zone() == Zone::Far);
-  z.on_rssi(-60);
+  z.on_rssi(-60, -60);
   CHECK(z.zone() == Zone::Close);
-  z.on_rssi(-68);
+  z.on_rssi(-68, -60);
   CHECK(z.zone() == Zone::Close);  // within hysteresis
-  z.on_rssi(-70);
+  z.on_rssi(-70, -60);
   CHECK(z.zone() == Zone::Near);
   z.clear();
   CHECK(z.zone() == Zone::Gone);
@@ -36,29 +36,44 @@ TEST(rssi_is_smoothed) {
   PresenceConfig cfg;  // alpha 0.3
   ZoneTracker z(&cfg);
   z.reset();
-  z.on_rssi(-60);
+  z.on_rssi(-60, -60);
   CHECK_NEAR(z.rssi(), -60, 1e-4);  // first reading taken as-is
-  z.on_rssi(-90);
+  z.on_rssi(-90, -60);
   CHECK_NEAR(z.rssi(), -69, 1e-4);  // moves 30% of the way
 }
 
 TEST(policy_rules) {
   PolicyInputs ok;
-  ok.authenticated = ok.armed = ok.at_door = ok.context_ok = ok.locked = true;
-  CHECK(decide(UnlockMode::ApproachOnly, ok) == Decision::Unlock);
-  CHECK(decide(UnlockMode::ApproachAndIntent, ok) == Decision::None);  // needs a handle touch
-  PolicyInputs touched = ok;
-  touched.intent = true;
-  CHECK(decide(UnlockMode::ApproachAndIntent, touched) == Decision::Unlock);
+  ok.authenticated = ok.outside = ok.at_door = ok.home_ok = ok.carried = ok.intent = ok.locked = true;
+  CHECK(ready(ok));
+  CHECK(decide(ok) == Decision::Unlock);
 
-  bool PolicyInputs::*required[] = {&PolicyInputs::authenticated, &PolicyInputs::armed, &PolicyInputs::at_door,
-                                    &PolicyInputs::context_ok, &PolicyInputs::locked};
+  bool PolicyInputs::*required[] = {&PolicyInputs::authenticated, &PolicyInputs::outside, &PolicyInputs::at_door,
+                                    &PolicyInputs::home_ok, &PolicyInputs::carried, &PolicyInputs::intent,
+                                    &PolicyInputs::locked};
   for (auto field : required) {
-    PolicyInputs x = touched;
+    PolicyInputs x = ok;
     x.*field = false;
-    CHECK(decide(UnlockMode::ApproachAndIntent, x) == Decision::None);
-    CHECK(decide(UnlockMode::ApproachOnly, x) == Decision::None);
+    CHECK(decide(x) == Decision::None);  // every rule is required
   }
+  PolicyInputs no_touch = ok;
+  no_touch.intent = false;
+  CHECK(ready(no_touch));  // "ready" ignores the handle and the bolt
+}
+
+TEST(at_door_zone_uses_fast_filter_and_hysteresis) {
+  PresenceConfig cfg;
+  cfg.fast_alpha = 1.f;
+  ZoneTracker z(&cfg);
+  z.reset();
+  z.on_rssi(-70, -62);
+  CHECK(!z.at_door());
+  z.on_rssi(-61, -62);
+  CHECK(z.at_door());
+  z.on_rssi(-64, -62);
+  CHECK(z.at_door());  // within 3 dB hysteresis
+  z.on_rssi(-66, -62);
+  CHECK(!z.at_door());
 }
 
 TEST(intent_detects_bursts_not_drift) {

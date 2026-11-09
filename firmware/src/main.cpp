@@ -107,10 +107,12 @@ class BoardBattery : public hal::Battery {
   }
 };
 
-class BoardDoor : public hal::DoorSensor {
+// Optional reed switch, ONLY to validate the gyro door estimator on the bench (ground truth for
+// logs). The lock itself never uses it.
+class BoardDoor {
  public:
   void begin() { pinMode(board::kDoorReed, INPUT_PULLUP); }
-  bool closed() override { return digitalRead(board::kDoorReed) == LOW; }
+  bool closed() { return digitalRead(board::kDoorReed) == LOW; }
 };
 
 // ---------------------------------------------------------------- wiring
@@ -124,13 +126,13 @@ BoardDoor door;
 
 DriveConfig make_drive_config() {
   DriveConfig c;
-  c.nominal_cpd = board::kNominalCpd;
+  for (int i = 0; i < board::kMotorCount && i < DriveConfig::kMaxMotors; ++i) c.motor_cpd[i] = board::motor_cpd(i);
   c.slot_span_deg = 102.f;  // must match mech/params.scad: travel + 2 * deadband
   return c;
 }
 
 DriveController drive(motor, encoder, hub, current, make_drive_config());
-LockController lock(drive, battery, board::kHasDoorSensor ? &door : nullptr, LockConfig{});
+LockController lock(drive, battery, LockConfig{});
 
 const char* state_name(LockState s) {
   switch (s) {
@@ -155,8 +157,9 @@ void print_status() {
                 drive.hub_progress(), static_cast<long>(encoder.count()), battery.millivolts(),
                 current.milliamps());
   if (cal.valid) {
-    Serial.printf("  cal: unlock_dir=%d cpd=%.2f (nominal %.2f) locked=%.1f unlocked=%.1f span=%ld\n",
-                  cal.unlock_dir, cal.cpd, board::kNominalCpd, cal.hub_locked, cal.hub_unlocked,
+    float ratio = cal.motor > 0 ? board::kGearboxRatios[cal.motor - 1] : 0.f;
+    Serial.printf("  cal: unlock_dir=%d cpd=%.2f motor=1:%.0f locked=%.1f unlocked=%.1f span=%ld\n",
+                  cal.unlock_dir, cal.cpd, ratio, cal.hub_locked, cal.hub_unlocked,
                   static_cast<long>(cal.stall_span));
   }
 }
