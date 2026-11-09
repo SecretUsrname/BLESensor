@@ -136,7 +136,9 @@ All of it can be built and tested **without the mechanism**, using an ESP32 dev 
   - Done: gyro door estimator, side tracker, login v3, policy v3, relocking, event log, storage interface and motor auto-detect, all in `firmware/lib/slock_core`. Rules v2 are removed. Protocol: status v2 (30 bytes), Log characteristic, SetSide / DoorCal / SetStrict / ReadLog.
   - Tests: 63 host tests pass in the `firmware-tests` CI workflow (door estimator, and one scenario test per spec row), and the board firmware builds there too. They run in CI because Windows Smart App Control now blocks freshly built binaries on the dev PC.
   - The first CI runs caught real gaps, now fixed: stale step data when chatting at the door before turning the handle (context is now re-signed on every handle turn); someone walking in and straight on to a far room being misread (shorter after-close window; inside levels in the first 5 s count on their own).
-  - Still to do (spec section 14): the twin (`twin_api.cpp` still uses the rules-v2 API and won't build), the iOS app, and the board BLE/IMU/flash layer.
+  - iOS app v0.3 (2026-11-09): login v3 with step data and the home diary, the side card with Correct, the Inside/Outside prompt on Unlock, side-change notifications, the calibration wizard, the lock's event log and a step test. Builds in CI; not yet tried on the phone.
+  - Twin (2026-11-09): simulated door with the gyro, a simulated phone with places, walking and home status, and the section 12 scenarios as buttons. Its library is blocked by Smart App Control on the dev PC, so `test_protocol.py` (a virtual iPhone v0.3) and `test_scenarios.py` (every scenario button) run in CI on Linux.
+  - Still to do (spec section 14): the board BLE/IMU/flash layer.
 - **Auto-unlock rules v2 (2026-11-09, superseded by the v1 framework):**
   - arrival judged per phone at login
   - armed for 5 min, but unlocking only in a 30 s window at the door (Close)

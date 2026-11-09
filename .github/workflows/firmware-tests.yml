@@ -4,9 +4,9 @@ name: Firmware tests
 
 on:
   push:
-    paths: ["firmware/**", ".github/workflows/firmware-tests.yml"]
+    paths: ["firmware/**", "twin/**", ".github/workflows/firmware-tests.yml"]
   pull_request:
-    paths: ["firmware/**"]
+    paths: ["firmware/**", "twin/**"]
   workflow_dispatch:
 
 jobs:
@@ -39,3 +39,29 @@ jobs:
       - name: Build XIAO nRF52840 firmware
         working-directory: firmware
         run: pio run
+
+  twin:
+    # The digital twin's library, protocol check (a virtual iPhone v0.3) and scenario buttons,
+    # headless on Linux. On the dev PC, Smart App Control blocks freshly built libraries.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the twin library
+        run: bash twin/build.sh
+      - name: Install Python dependencies
+        run: pip install cryptography
+      - name: Protocol check and scenarios
+        run: |
+          set +e
+          python twin/test_protocol.py > twin-output.txt 2>&1
+          a=$?
+          timeout 900 python twin/test_scenarios.py >> twin-output.txt 2>&1
+          b=$?
+          cat twin-output.txt
+          msg=$(grep -E "FAIL|error|Error|Traceback|passed" twin-output.txt | head -80 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          level=error; [ $a -eq 0 ] && [ $b -eq 0 ] && level=notice
+          [ -n "$msg" ] && echo "::$level title=Twin tests::$msg"
+          [ $a -eq 0 ] && [ $b -eq 0 ]

@@ -48,7 +48,7 @@
   #log div { padding: 1px 0; border-bottom: 1px dashed var(--line); }
   #log .t { color: var(--muted); margin-right: 6px; }
   #log .auto, #log .arm { color: var(--ok); font-weight: 600; } #log .scenario { color: var(--accent); }
-  #log .ble { color: var(--warn); }
+  #log .ble { color: var(--warn); } #log .bad { color: var(--bad); font-weight: 600; } #log .door { color: var(--muted); }
   .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 6px; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
   #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 7px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
@@ -116,16 +116,22 @@
 
   <section>
     <div class="panel">
-      <h2>Scenarios</h2>
+      <h2>Scenarios (docs/v1-framework.md section 12)</h2>
       <div class="row">
-        <button class="primary" onclick="api('scenario','arrive')">Arrive home</button>
-        <button onclick="api('scenario','walk_past')">Walk past door</button>
-        <button onclick="api('scenario','relay')">Relay attack</button>
-        <button onclick="api('scenario','inside')">Phone inside</button>
-        <button onclick="api('scenario','leave')">Leave</button>
-        <button class="primary" onclick="api('intent')">Touch handle</button>
+        <button class="primary" onclick="api('scenario','arrive')">Arrive + handle</button>
+        <button onclick="api('scenario','walk_in')">Walk in</button>
+        <button onclick="api('scenario','leave')">Mail trip</button>
+        <button onclick="api('scenario','open_not_enter')">Open, don't go in</button>
       </div>
-      <p class="note">Scenarios drive the <b>simulated</b> phone (real P-256 login); your real phone keeps working alongside it. Arrive home: away long enough, armed in the lobby, then walks to the door. Press Touch handle once it's at the door. Walk past and Relay attack run by themselves and report the result in the log.</p>
+      <div class="row">
+        <button onclick="api('scenario','relay_away')">Relay while away</button>
+        <button onclick="api('scenario','relay_home')">Relay at night</button>
+        <button onclick="api('scenario','bluetooth_off')">Bluetooth off walk-in</button>
+        <button onclick="api('scenario','delivery')">Delivery while at work</button>
+        <button onclick="api('scenario','calibrate')">Calibration wizard</button>
+      </div>
+      <div class="row"><button class="primary" onclick="api('intent')">Turn handle</button></div>
+      <p class="note">Scenarios drive the <b>simulated</b> phone (real P-256 v3 login) and report <b>RESULT</b> lines in the log. Minutes away are fast-forwarded unless your real phone is connected. Try them in order: Arrive, Walk in, Mail trip.</p>
     </div>
 
     <div class="panel">
@@ -134,7 +140,7 @@
         <div><b>Real phone</b> <span class="note">(Bluetooth)</span><div class="kv" id="ph_ble" style="margin-top:6px"></div></div>
         <div><b>Simulated phone</b><div class="kv" id="ph_sim" style="margin-top:6px"></div></div>
       </div>
-      <p class="note">armed = genuine arrival (5 min max) · at door = unlock window (30 s, only while Close) · context = what the phone signed about its home geofence</p>
+      <p class="note">ready = would unlock on a handle turn: side outside, at the door (~1 m), signs "home", walked in the last ~30 s, logged in.</p>
     </div>
 
     <div class="grid2">
@@ -144,32 +150,54 @@
           <button onclick="api('sim_connect')">Connect</button>
           <button onclick="api('sim_disconnect')">Disconnect</button>
         </div>
-        <div class="row"><span class="label">RSSI <b id="simrssiv"></b></span>
-          <input id="simrssi" type="range" min="-100" max="-40" value="-90" oninput="api('sim_rssi', +this.value)"></div>
-        <div class="row"><span class="label">home context</span>
-          <select id="simctx" onchange="api('sim_ctx', this.value)">
-            <option value="just_home">home, arrived 1 min ago</option>
-            <option value="home_hours">home for hours</option>
-            <option value="not_home">not at home</option>
-            <option value="no_geofence">no home set up</option>
-            <option value="none">none (old app)</option>
+        <div class="row"><span class="label">where</span><select id="simplace" onchange="api('sim_place', this.value)"></select></div>
+        <div class="row"><label><input id="simwalk" type="checkbox" onchange="api('sim_walking', this.checked)"> walking (pedometer)</label></div>
+        <div class="row"><span class="label">home area</span>
+          <select id="simhome" onchange="api('sim_home', this.value)">
+            <option value="home">home (enters now)</option>
+            <option value="away">away (leaves now)</option>
+            <option value="none">no home set up</option>
+          </select></div>
+        <div class="row"><span class="label">app version</span>
+          <select id="simapp" onchange="api('sim_app', +this.value)">
+            <option value="3">v0.3 (diary + steps)</option>
+            <option value="2">v0.2 (home only)</option>
+            <option value="1">v0.1 (no context)</option>
           </select></div>
         <div class="row">
-          <button onclick="api('cmd','unlock')">App: unlock</button>
-          <button onclick="api('cmd','lock')">App: lock</button>
+          <button onclick="api('cmd','unlock_inside')">Unlock: I'm inside</button>
+          <button onclick="api('cmd','unlock_outside')">Unlock: I'm outside</button>
+          <button onclick="api('cmd','lock')">Lock</button>
+        </div>
+        <div class="row">
+          <button onclick="api('sim_side','inside')">Correct: inside</button>
+          <button onclick="api('sim_side','outside')">Correct: outside</button>
         </div>
         <div class="kv"><span>auto-unlocks</span><span id="autos"></span></div>
       </div>
 
       <div class="panel">
-        <h2>At the door</h2>
+        <h2>The door</h2>
+        <div class="row">
+          <button onclick="api('door','open')">Open</button>
+          <button onclick="api('door','ajar')">Push to 15°</button>
+          <button onclick="api('door','close')">Close softly</button>
+          <button onclick="api('door','slam')">Slam</button>
+        </div>
+        <div class="row">
+          <button onclick="api('door','knock')">Knock</button>
+          <button onclick="api('door','force')">Force (while locked)</button>
+        </div>
+        <div class="kv">
+          <span>true angle</span><span id="dooract"></span>
+          <span>gyro says</span><span id="doorest"></span>
+        </div>
         <div class="row"><span class="label">knob / key <b id="knobv"></b></span>
           <input id="knob" type="range" min="0" max="90" step="1" value="0" onchange="api('turn', +this.value)"></div>
         <div class="row">
           <button onclick="api('turn',0)">Turn to locked</button>
           <button onclick="api('turn',90)">Turn to unlocked</button>
         </div>
-        <div class="row"><label><input id="door" type="checkbox" checked onchange="api('door', this.checked)"> door closed</label></div>
         <div class="row">
           <button onclick="api('jam',40)">Jam bolt at 40°</button>
           <button onclick="api('jam',null)">Clear jam</button>
@@ -182,31 +210,21 @@
     <div class="panel">
       <h2>Lock settings</h2>
       <div class="row">
-        <span class="label">unlock mode</span>
-        <select id="mode" onchange="api('mode', +this.value)">
-          <option value="1">approach + handle touch</option>
-          <option value="0">approach only</option>
-        </select>
-        <span class="label">auto-relock</span>
+        <span class="label">relock after close</span>
         <select id="relock" onchange="api('relock', +this.value)">
-          <option value="0">off</option><option value="10">10 s</option><option value="30">30 s</option>
+          <option value="0">off</option><option value="3">3 s</option><option value="10">10 s</option><option value="30">30 s</option>
         </select>
+        <label><input id="strict" type="checkbox" onchange="api('strict', this.checked)"> strict mode (refuse phones without home + step data)</label>
       </div>
       <div class="row">
-        <span class="label">arrival after away</span>
-        <select id="minaway" onchange="api('min_away', +this.value)">
-          <option value="10">10 s (testing)</option><option value="30">30 s</option><option value="60">60 s (default)</option>
-        </select>
-      </div>
-      <div class="row"><label><input id="reqctx" type="checkbox" onchange="api('require_ctx', this.checked)"> require home context (refuse phones that don't report it)</label></div>
-      <div class="row">
-        <button onclick="api('calibrate')">Calibrate</button>
+        <button onclick="api('calibrate')">Calibrate motor</button>
         <button onclick="api('power_cycle')">Power cycle</button>
         <button onclick="api('skip', 60000)">Skip 60 s</button>
         <button onclick="api('enroll_window')">Open enrolment (60 s)</button>
       </div>
       <div class="kv" style="margin-top:6px">
-        <span>calibrated / homed</span><span id="cal"></span>
+        <span>motor</span><span id="cal"></span>
+        <span>door calibration</span><span id="doorcal"></span>
         <span>enrolled keys</span><span id="keys"></span>
       </div>
     </div>
@@ -293,16 +311,20 @@ async function poll() {
   finally { polling = false; }
 }
 
-function renderPhone(sel, p) {
+function renderPhone(sel, p, extra) {
   const yes = (b) => (b ? '<b style="color:var(--ok)">yes</b>' : 'no');
+  const sideColor = { outside: 'var(--accent)', inside: 'var(--ok)', unknown: 'var(--warn)' }[p.side_name] || 'var(--muted)';
+  const steps = p.ctx_has_steps ? (p.ctx_secs_since_step === 65535 ? 'no steps yet' : `last step ${p.ctx_secs_since_step} s before signing`) : 'no step data';
   const rows = !p.used ? [['connection', 'not connected']] : [
     ['login', p.authenticated ? `yes (key ${p.key_id})` : (p.key_id >= 0 ? `renewing (key ${p.key_id})` : 'no')],
-    ['zone', `${p.zone_name} · ${p.rssi > -127 ? p.rssi.toFixed(0) + ' dBm' : 'no rssi yet'}`],
-    ['armed', p.armed ? `<b style="color:var(--ok)">yes</b> · ${(p.armed_ms_left / 1000).toFixed(0)} s left` : 'no'],
-    ['at door', yes(p.at_door)],
-    ['context', `${p.context_text} · ${p.ctx_ok ? '<span style="color:var(--ok)">accepted</span>' : '<span style="color:var(--bad)">refused</span>'}`],
+    ['side', p.key_id < 0 ? '–' : `<b style="color:${sideColor}">${p.side_name}</b> · ${p.side_pending ? 'deciding (door just closed)' : p.side_reason_name}`],
+    ['signal', `${p.zone_name} · ${p.fast_rssi > -127 ? p.fast_rssi.toFixed(0) + ' dBm' : 'no rssi yet'} · at door ${yes(p.at_door)}`],
+    ['home', `${p.context_text} · ${p.home_ok ? '<span style="color:var(--ok)">ok</span>' : '<span style="color:var(--bad)">refused</span>'}`],
+    ['walking', `${yes(p.carried)} · ${steps}`],
+    ['ready', p.ready ? '<b style="color:var(--ok)">YES: turn the handle</b>' : 'no'],
     ['last login / cmd', `${p.last_auth_name} / ${p.last_cmd_name}`],
   ];
+  if (extra) rows.unshift(['phone', extra]);
   const html = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
   const el = $(sel);
   if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
@@ -321,36 +343,40 @@ function render(s) {
   const ext = (1 - s.bolt / s.travel) * 25.4;
   const bolt = $('#bolt'); bolt.setAttribute('x', 110 - 40 + ext); bolt.setAttribute('width', 40);
   $('#bolttext').textContent = `bolt ${ext.toFixed(1)} mm out`;
-  $('#framegroup').setAttribute('opacity', s.door_closed ? 1 : .25);
-  $('#doortext').textContent = s.door_closed ? 'frame / strike' : 'door OPEN';
-  $('#door').setAttribute('transform', s.door_closed ? '' : 'translate(-6 0)');
+  const open = s.door_angle > 1;
+  $('#framegroup').setAttribute('opacity', open ? .25 : 1);
+  $('#doortext').textContent = open ? `door OPEN ${s.door_angle.toFixed(0)}°` : 'frame / strike';
+  $('#door').setAttribute('transform', open ? 'translate(-6 0)' : '');
 
   const b = $('#badge'); b.textContent = s.lock_state_name;
   b.className = 'badge ' + (['locking', 'unlocking', 'calibrating', 'homing'].includes(s.lock_state_name) ? 'moving' : s.lock_state_name);
   $('#simtime').textContent = `t = ${(s.sim_ms / 1000).toFixed(1)} s`;
   $('#blechip').textContent = 'bluetooth: ' + s.ble_status;
-  $('#modechip').textContent = 'mode: ' + s.mode_name;
+  $('#modechip').textContent = `door: ${s.door_state_name}${s.tamper ? ' · TAMPER' : ''}`;
   $('#drive').textContent = `${s.drive_status_name}${s.stalled ? ' (stalled)' : ''}${s.pushing ? ' · pushing bolt' : ''}`;
   $('#motorbar').style.width = Math.abs(s.motor_duty) * 100 + '%';
   $('#motorbar').style.background = s.motor_duty === 0 ? 'var(--muted)' : (s.stalled ? 'var(--bad)' : 'var(--warn)');
   $('#enc').textContent = `${s.encoder} / ${s.park_position}`;
 
   renderPhone('#ph_ble', s.phones.ble);
-  renderPhone('#ph_sim', s.phones.sim);
+  renderPhone('#ph_sim', s.phones.sim, s.sim.summary);
   $('#autos').textContent = s.auto_unlocks;
-  $('#simrssiv').textContent = s.sim_rssi ?? '';
-  if (document.activeElement !== $('#simctx')) $('#simctx').value = s.sim_ctx;
-  $('#reqctx').checked = !!s.require_ctx;
-  if (document.activeElement !== $('#simrssi') && s.sim_rssi != null) $('#simrssi').value = s.sim_rssi;
+  const pl = $('#simplace');
+  if (!pl.options.length) for (const [k, v] of Object.entries(s.places)) pl.add(new Option(v, k));
+  if (document.activeElement !== pl) pl.value = s.sim.place;
+  $('#simwalk').checked = !!s.sim.walking;
+  if (document.activeElement !== $('#simhome')) $('#simhome').value = s.sim.home;
+  if (document.activeElement !== $('#simapp')) $('#simapp').value = String(s.sim.app);
+  $('#strict').checked = !!s.strict;
+  $('#dooract').textContent = `${s.door_angle.toFixed(1)}°`;
+  $('#doorest').textContent = `${s.door_state_name}${s.door_state_name === 'closed' ? (s.door_trusted ? ' (trusted)' : ' (not trusted)') : ''} · ${s.door_angle_est.toFixed(1)}° · bias ${s.door_bias_est.toFixed(2)}°/s${s.door_ref_known ? '' : ' · no reference yet'}`;
   $('#knobv').textContent = `${s.bolt.toFixed(0)}°`;
   if (document.activeElement !== $('#knob')) $('#knob').value = s.bolt;
-  $('#door').checked = !!s.door_closed;
   $('#battv').textContent = `${s.battery_mv} mV`;
   if (document.activeElement !== $('#batt')) $('#batt').value = s.battery_mv;
-  if (document.activeElement !== $('#mode')) $('#mode').value = s.mode;
-  if (document.activeElement !== $('#relock')) $('#relock').value = String(s.auto_relock_ms / 1000);
-  if (document.activeElement !== $('#minaway')) $('#minaway').value = String(s.min_away_ms / 1000);
-  $('#cal').textContent = `${s.calibrated ? 'yes' : 'no'} / ${s.homed ? 'yes' : 'no'}`;
+  if (document.activeElement !== $('#relock')) $('#relock').value = String(s.relock_after_close_ms / 1000);
+  $('#cal').textContent = `${s.calibrated ? s.motor_name : 'not calibrated'}${s.homed ? '' : ' · not homed'}`;
+  $('#doorcal').textContent = `${[1, 2, 4, 8].filter((b) => s.cal_steps & b).length}/4 steps · outside ${s.cal_outside_at_door} · inside ${s.cal_inside_at_lock} · 2 m ${s.cal_two_m} · at door ≥ ${s.cal_at_door} dBm · blocks ${s.cal_block_db} dB`;
   $('#keys').textContent = s.key_count + (s.enroll_open ? ' · enrolment OPEN' : '');
   $('#ble').textContent = s.ble_status;
   $('#blerssiv').textContent = s.ble_rssi_override ?? 'phone';

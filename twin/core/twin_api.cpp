@@ -1,18 +1,27 @@
 // C API around the real firmware core (slock::App and everything under it) plus the simulated
-// mechanism from the host tests. Built into slock_twin.dll and driven from Python.
+// mechanism (SimPlant) and a simulated door with the lock's gyro on it (DoorSim), both from the host
+// tests. Built into slock_twin.dll (Windows) or libslock_twin.so (Linux, for CI) and driven from
+// Python.
 //
 // Two phone connections are modelled: conn 1 = the real phone over Bluetooth, conn 2 = the
 // simulated phone. Time is simulated: twin_advance(ms) runs the firmware loop and the physics 1 ms
 // at a time, so the twin can run in real time or fast-forward.
 
 #include <cstring>
+#include <map>
 #include <memory>
 #include <random>
+#include <vector>
 
+#include "door_sim.h"
 #include "sim_plant.h"
 #include "slock/app.h"
 
+#ifdef _WIN32
 #define TWIN_API extern "C" __declspec(dllexport)
+#else
+#define TWIN_API extern "C" __attribute__((visibility("default")))
+#endif
 
 using namespace slock;
 
@@ -39,9 +48,20 @@ struct SimBattery : hal::Battery {
   uint16_t millivolts() override { return mv; }
 };
 
-struct SimDoor : hal::DoorSensor {
-  bool is_closed = true;
-  bool closed() override { return is_closed; }
+// "Flash": survives power cycles.
+struct SimFlash : hal::Storage {
+  std::map<uint16_t, std::vector<uint8_t>> rec;
+  bool load(uint16_t id, void* buf, size_t len) override {
+    auto it = rec.find(id);
+    if (it == rec.end() || it->second.size() != len) return false;
+    std::memcpy(buf, it->second.data(), len);
+    return true;
+  }
+  bool save(uint16_t id, const void* buf, size_t len) override {
+    const uint8_t* p = static_cast<const uint8_t*>(buf);
+    rec[id] = std::vector<uint8_t>(p, p + len);
+    return true;
+  }
 };
 
 const uint8_t kLockId[kLockIdLen] = {'S', 'L', 'K', 'T', 'W', 'I', 'N', '1'};
@@ -49,17 +69,13 @@ constexpr uint16_t kConns[2] = {1, 2};  // real phone, simulated phone
 
 struct Twin {
   SimPlant plant;
+  DoorSim door;
   SimBattery battery;
-  SimDoor door;
+  SimFlash flash;
   CallbackVerifier verifier;
   DeviceRandom rng;
   KeyStore keys;
   Millis now = 0;
-
-  // "Flash": survives power cycles.
-  Calibration saved_cal;
-  AppConfig app_cfg;
-  uint32_t relock_ms = 0;
 
   std::unique_ptr<DriveController> drive;
   std::unique_ptr<LockController> lock;
@@ -71,13 +87,13 @@ struct Twin {
     drive.reset();
     DriveConfig dc;
     dc.slot_span_deg = plant.slot_span;
-    dc.nominal_cpd = plant.cpd;
+    // Motor auto-detect, as on the board: the simulated motor is the "1:150" one.
+    dc.motor_cpd[0] = plant.cpd * 100.f / 150.f;
+    dc.motor_cpd[1] = plant.cpd;
+    dc.motor_cpd[2] = plant.cpd * 2.f;
     drive.reset(new DriveController(plant, plant, plant, plant, dc));
-    if (saved_cal.valid) drive->set_calibration(saved_cal);
-    LockConfig lc;
-    lc.auto_relock_ms = relock_ms;
-    lock.reset(new LockController(*drive, battery, &door, lc));
-    app.reset(new App(*lock, keys, verifier, rng, battery, kLockId, app_cfg));
+    lock.reset(new LockController(*drive, battery, LockConfig{}));
+    app.reset(new App(*lock, keys, verifier, rng, battery, kLockId, AppConfig{}, &flash));
     app->begin(now);
   }
 
@@ -86,10 +102,12 @@ struct Twin {
       app->tick(now);
       plant.step(1);
       ++now;
+      if (now % 10 == 0) {  // the IMU at 100 Hz
+        float accel = 0.f;
+        float rate = door.step(10, accel);
+        app->on_imu(rate, accel, now);
+      }
     }
-    if (drive->calibration().valid) saved_cal = drive->calibration();
-    app_cfg = app->config();
-    relock_ms = lock->auto_relock_ms();
   }
 };
 
@@ -100,18 +118,25 @@ Twin* T(void* h) { return static_cast<Twin*>(h); }
 // Mirrored field-for-field by TwinLink / TwinState in twin.py; keep them in sync.
 struct TwinLink {
   float rssi;
-  uint32_t armed_ms_left;
+  float fast_rssi;
+  uint16_t ctx_entry_min;
+  uint16_t ctx_exit_min;
+  uint16_t ctx_secs_since_step;
   int8_t key_id;
   uint8_t used;
   uint8_t authenticated;
   uint8_t zone;
-  uint8_t armed;
   uint8_t at_door;
-  uint8_t ctx_provided;
+  uint8_t ctx_version;  // 0 = no context (v1 login), 2, 3
   uint8_t ctx_has_home;
   uint8_t ctx_inside;
-  uint8_t ctx_minutes;
-  uint8_t ctx_ok;
+  uint8_t ctx_has_steps;
+  uint8_t home_ok;
+  uint8_t carried;
+  uint8_t ready;
+  uint8_t side;         // slock::Side
+  uint8_t side_reason;  // slock::SideReason
+  uint8_t side_pending;
   uint8_t last_auth;
   uint8_t last_cmd;
 };
@@ -125,25 +150,37 @@ struct TwinState {
   float hub_progress;
   float jam_at;        // < 0 = no jam
   float motor_duty;    // -1 .. 1
+  float door_angle;    // true door angle (simulation)
+  float door_angle_est;  // what the lock's gyro estimator thinks
+  float door_bias_est;
   int32_t encoder;
   int32_t park_position;
   uint32_t auto_unlocks;
   uint32_t changes;
-  uint32_t auto_relock_ms;
-  uint32_t min_away_ms;
+  uint32_t relock_after_close_ms;
+  uint32_t log_next_seq;
   TwinLink links[2];   // [0] real phone (conn 1), [1] simulated phone (conn 2)
   uint16_t battery_mv;
+  int8_t cal_outside_at_door;
+  int8_t cal_inside_at_lock;
+  int8_t cal_two_m;
+  int8_t cal_at_door;
+  uint8_t cal_block_db;
+  uint8_t cal_steps;
   uint8_t lock_state;
   uint8_t drive_status;
-  uint8_t mode;
-  uint8_t door_closed;
+  uint8_t door_state;  // slock::DoorState
+  uint8_t door_trusted;
+  uint8_t door_ref_known;
+  uint8_t tamper;
   uint8_t calibrated;
   uint8_t homed;
   uint8_t enroll_open;
   uint8_t pushing;
   uint8_t stalled;
   uint8_t key_count;
-  uint8_t require_ctx;
+  uint8_t strict;
+  uint8_t motor;
 };
 
 TWIN_API uint32_t twin_state_size() { return sizeof(TwinState); }
@@ -162,6 +199,7 @@ TWIN_API void twin_advance(void* h, uint32_t ms) { T(h)->advance(ms); }
 TWIN_API void twin_get_state(void* h, TwinState* s) {
   Twin* t = T(h);
   std::memset(s, 0, sizeof(*s));
+  const App& app = *t->app;
   s->sim_ms = t->now;
   s->gear = t->plant.g;
   s->bolt = t->plant.u;
@@ -170,44 +208,64 @@ TWIN_API void twin_get_state(void* h, TwinState* s) {
   s->hub_progress = t->drive->calibration().valid ? t->drive->hub_progress() : -1.f;
   s->jam_at = t->plant.jam_at > 1e8f ? -1.f : t->plant.jam_at;
   s->motor_duty = t->plant.duty / 1000.f;
+  s->door_angle = t->door.angle;
+  s->door_angle_est = app.door().angle();
+  s->door_bias_est = app.door().bias();
   s->encoder = t->plant.count();
   s->park_position = t->drive->park_position();
-  s->auto_unlocks = t->app->auto_unlocks();
+  s->auto_unlocks = app.auto_unlocks();
   s->changes = t->lock->change_count();
-  s->auto_relock_ms = t->lock->auto_relock_ms();
-  s->min_away_ms = t->app->config().presence.min_away_ms;
+  s->relock_after_close_ms = t->app->config().relock_after_close_ms;
+  s->log_next_seq = app.log().next_seq();
   for (int i = 0; i < 2; ++i) {
-    LinkInfo li = t->app->link_info(kConns[i], t->now);
-    protocol::StatusPacket st = t->app->status(kConns[i], t->now);
+    LinkInfo li = app.link_info(kConns[i], t->now);
+    protocol::StatusPacket st = app.status(kConns[i], t->now);
     TwinLink& L = s->links[i];
     L.rssi = li.rssi;
-    L.armed_ms_left = li.armed_ms_left;
+    L.fast_rssi = li.fast_rssi;
+    L.ctx_entry_min = li.context.minutes_since_entry;
+    L.ctx_exit_min = li.context.minutes_since_exit;
+    L.ctx_secs_since_step = li.context.seconds_since_step;
     L.key_id = static_cast<int8_t>(li.key_id);
     L.used = li.used ? 1 : 0;
     L.authenticated = li.authenticated ? 1 : 0;
     L.zone = static_cast<uint8_t>(li.zone);
-    L.armed = li.armed ? 1 : 0;
     L.at_door = li.at_door ? 1 : 0;
-    L.ctx_provided = li.context.provided ? 1 : 0;
+    L.ctx_version = li.context.provided ? li.context.version : 0;
     L.ctx_has_home = li.context.has_home ? 1 : 0;
     L.ctx_inside = li.context.inside_home ? 1 : 0;
-    L.ctx_minutes = li.context.minutes_since_entry;
-    L.ctx_ok = li.context_ok ? 1 : 0;
+    L.ctx_has_steps = li.context.has_steps ? 1 : 0;
+    L.home_ok = li.home_ok ? 1 : 0;
+    L.carried = li.carried ? 1 : 0;
+    L.ready = li.ready ? 1 : 0;
+    L.side = static_cast<uint8_t>(li.side);
+    L.side_reason = static_cast<uint8_t>(li.side_reason);
+    L.side_pending = li.side_pending ? 1 : 0;
     L.last_auth = st.last_auth_result;
     L.last_cmd = st.last_cmd_result;
   }
   s->battery_mv = t->battery.mv;
+  const DoorCalibration& c = app.door_calibration();
+  s->cal_outside_at_door = c.outside_at_door;
+  s->cal_inside_at_lock = c.inside_at_lock;
+  s->cal_two_m = c.two_m;
+  s->cal_at_door = c.at_door_dbm();
+  s->cal_block_db = c.block_db;
+  s->cal_steps = c.steps_done;
   s->lock_state = static_cast<uint8_t>(t->lock->state());
   s->drive_status = static_cast<uint8_t>(t->lock->last_drive_status());
-  s->mode = static_cast<uint8_t>(t->app->mode());
-  s->door_closed = t->door.is_closed ? 1 : 0;
+  s->door_state = static_cast<uint8_t>(app.door().state());
+  s->door_trusted = app.door().trusted() ? 1 : 0;
+  s->door_ref_known = app.door().reference_known() ? 1 : 0;
+  s->tamper = app.door().tamper() ? 1 : 0;
   s->calibrated = t->drive->calibration().valid ? 1 : 0;
   s->homed = t->drive->homed() ? 1 : 0;
-  s->enroll_open = t->app->enrollment_open(t->now) ? 1 : 0;
+  s->enroll_open = app.enrollment_open(t->now) ? 1 : 0;
   s->pushing = t->plant.pushing ? 1 : 0;
   s->stalled = t->plant.stalled ? 1 : 0;
   s->key_count = t->keys.count();
-  s->require_ctx = t->app->config().require_home_context ? 1 : 0;
+  s->strict = t->app->config().strict ? 1 : 0;
+  s->motor = t->drive->calibration().motor;
 }
 
 // ---- BLE links (conn 1 = real phone via the GATT server, conn 2 = simulated phone)
@@ -242,35 +300,41 @@ TWIN_API void twin_status_packet(void* h, int conn, uint8_t* out) {
 }
 TWIN_API uint32_t twin_status_size() { return sizeof(protocol::StatusPacket); }
 TWIN_API void twin_lock_id(void*, uint8_t* out) { std::memcpy(out, kLockId, kLockIdLen); }
+// Log characteristic value for a link (count | events), advancing its cursor.
+TWIN_API uint32_t twin_log_page(void* h, int conn, uint8_t* out, uint32_t cap) {
+  return static_cast<uint32_t>(T(h)->app->log_page(static_cast<uint16_t>(conn), out, cap));
+}
+// The lock's event log for the page: events with seq >= from_seq, 12 bytes each. Returns the count.
+TWIN_API uint32_t twin_log_read(void* h, uint32_t from_seq, uint8_t* out, uint32_t max) {
+  std::vector<Event> ev(max);
+  uint16_t n = T(h)->app->log().read(from_seq, ev.data(), static_cast<uint16_t>(max));
+  std::memcpy(out, ev.data(), n * sizeof(Event));
+  return n;
+}
 
 // ---- physical inputs and installer settings (no authentication: these happen at the lock)
 TWIN_API void twin_intent(void* h) { T(h)->app->on_intent(T(h)->now); }
 TWIN_API void twin_open_enrollment(void* h, uint32_t ms) { T(h)->app->open_enrollment(T(h)->now, ms); }
 TWIN_API int twin_add_key(void* h, const uint8_t* pub) { return T(h)->keys.add(pub); }
 TWIN_API int twin_calibrate(void* h) { return static_cast<int>(T(h)->lock->request_calibration(T(h)->now)); }
-TWIN_API int twin_set_mode(void* h, int mode) {
-  bool ok = T(h)->app->set_mode(mode == 0 ? UnlockMode::ApproachOnly : UnlockMode::ApproachAndIntent);
-  T(h)->app_cfg = T(h)->app->config();
-  return ok ? 1 : 0;
-}
-TWIN_API void twin_set_relock(void* h, uint32_t ms) {
-  T(h)->lock->set_auto_relock_ms(ms);
-  T(h)->relock_ms = ms;
-}
-TWIN_API void twin_set_min_away(void* h, uint32_t ms) {
-  T(h)->app->config().presence.min_away_ms = ms;
-  T(h)->app_cfg = T(h)->app->config();
-}
-TWIN_API void twin_set_require_context(void* h, int on) {
-  T(h)->app->config().require_home_context = on != 0;
-  T(h)->app_cfg = T(h)->app->config();
-}
+TWIN_API void twin_set_relock(void* h, uint32_t ms) { T(h)->app->config().relock_after_close_ms = ms; }
+TWIN_API void twin_set_strict(void* h, int on) { T(h)->app->config().strict = on != 0; }
 
 // ---- the world
 TWIN_API int twin_turn_by_hand(void* h, float bolt) { return T(h)->plant.turn_by_hand(bolt) ? 1 : 0; }
 TWIN_API void twin_set_jam(void* h, float jam_at) { T(h)->plant.jam_at = jam_at < 0.f ? 1e9f : jam_at; }
 TWIN_API void twin_set_battery(void* h, uint32_t mv) { T(h)->battery.mv = static_cast<uint16_t>(mv); }
-TWIN_API void twin_set_door(void* h, int closed) { T(h)->door.is_closed = closed != 0; }
+// Door: swing to target_deg at speed_dps; slam = hit the frame with an impact when reaching 0.
+// A locked door can't open: the bolt holds it (only a forced rotation moves it then).
+TWIN_API void twin_door_move(void* h, float target_deg, float speed_dps, int slam) {
+  Twin* t = T(h);
+  if (target_deg > 0.f && t->plant.u < 1.f && t->drive->calibration().valid) target_deg = 0.f;  // bolt thrown
+  t->door.target = target_deg < 0.f ? 0.f : target_deg;
+  t->door.speed_dps = speed_dps;
+  t->door.slam = slam != 0;
+}
+TWIN_API void twin_door_knock(void* h, float mg) { T(h)->door.knock_mg = mg; }
+TWIN_API void twin_door_force(void* h, float dps) { T(h)->door.forced_dps = dps; }
 TWIN_API void twin_power_cycle(void* h) {
   Twin* t = T(h);
   t->plant.power_cycle();
