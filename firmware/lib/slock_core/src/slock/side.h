@@ -41,6 +41,7 @@ struct SideConfig {
   uint32_t post_from_ms = 300;     // signal after the close, from here...
   uint32_t post_to_ms = 1500;      // ...to here (short: the door blocks the instant it shuts)
   uint32_t follow_ms = 15000;      // decide at the latest this long after the close
+  uint32_t settle_ms = 5000;       // the first part of the follow window, judged on its own too
   uint8_t min_follow_samples = 5;
   uint32_t diary_margin_ms = 120000;  // geofence lag allowance around exit/entry times
   uint32_t stationary_s = 60;      // no steps for this long at the close = it wasn't carried through
@@ -117,6 +118,8 @@ class SideTracker {
     uint16_t follow_above = 0;
     uint16_t follow_outside = 0;  // at or below "outside at the door, door closed" levels
     uint16_t follow_far = 0;
+    uint16_t early_n = 0;      // follow samples within settle_ms of the close...
+    uint16_t early_above = 0;  // ...and how many of those were at inside levels
     bool faded = false;
     bool stationary = false;
     // latest signed context

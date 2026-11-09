@@ -167,7 +167,12 @@ void SideTracker::on_rssi(uint8_t key, float dbm, bool at_door, Millis now) {
         ++t.post_n;
       }
       ++t.follow_n;
-      if (dbm >= static_cast<float>(cal_->outside_at_door + 4)) ++t.follow_above;
+      bool above = dbm >= static_cast<float>(cal_->outside_at_door + 4);
+      if (above) ++t.follow_above;
+      if (age <= static_cast<int32_t>(cfg_.settle_ms)) {
+        ++t.early_n;
+        if (above) ++t.early_above;
+      }
       if (dbm <= static_cast<float>(cal_->outside_at_door + 1)) ++t.follow_outside;
       if (dbm <= static_cast<float>(cal_->outside_at_door - 8)) ++t.follow_far;
     }
@@ -208,6 +213,8 @@ void SideTracker::on_door_closed(Millis close_at, Millis now) {
     t.follow_above = 0;
     t.follow_outside = 0;
     t.follow_far = 0;
+    t.early_n = 0;
+    t.early_above = 0;
     t.faded = false;
     // Samples already received after the close moment (the close is reported once the door settles).
     for (uint8_t j = 0; j < t.count; ++j) {
@@ -219,7 +226,12 @@ void SideTracker::on_door_closed(Millis close_at, Millis now) {
         ++t.post_n;
       }
       ++t.follow_n;
-      if (s.dbm >= static_cast<float>(cal_->outside_at_door + 4)) ++t.follow_above;
+      bool above = s.dbm >= static_cast<float>(cal_->outside_at_door + 4);
+      if (above) ++t.follow_above;
+      if (age <= static_cast<int32_t>(cfg_.settle_ms)) {
+        ++t.early_n;
+        if (above) ++t.early_above;
+      }
       if (s.dbm <= static_cast<float>(cal_->outside_at_door + 1)) ++t.follow_outside;
       if (s.dbm <= static_cast<float>(cal_->outside_at_door - 8)) ++t.follow_far;
     }
@@ -247,7 +259,10 @@ void SideTracker::decide(uint8_t key, Track& t, bool final, Millis now) {
   // 3. What it does next: inside levels, or outside levels / fading down the hallway (primary).
   //    Levels in between (a far room inside, or just outside) say nothing.
   if (t.follow_n >= cfg_.min_follow_samples) {
-    if (t.follow_above * 10u >= t.follow_n * 6u) in += 2;
+    // A phone outside a closed door can't reach inside levels, so mostly-inside levels right after
+    // the close count even if it then goes somewhere far (a bedroom).
+    bool settled_inside = t.early_n >= cfg_.min_follow_samples && t.early_above * 10u >= t.early_n * 6u;
+    if (settled_inside || t.follow_above * 10u >= t.follow_n * 6u) in += 2;
     else if (t.follow_above == 0 && t.follow_far * 2u >= t.follow_n) out += 2;
     else if (t.follow_above == 0 && t.follow_outside * 10u >= t.follow_n * 8u) out += 1;
   }

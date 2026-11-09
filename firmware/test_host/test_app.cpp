@@ -262,11 +262,11 @@ TEST(v1_relock_if_not_opened_and_retry) {
   Rig r;
   r.come_home(r.a, 40 * kMin);
   r.run(60000);  // chatting at the door for a minute
-  r.turn_handle();
+  r.turn_handle();  // unlocks near the start of these 2.5 s
   CHECK(r.unlocked());
-  r.run(14000);
+  r.run(11000);  // ~13 s since the unlock
   CHECK(r.unlocked());
-  r.run(2000);  // 15 s without the door opening
+  r.run(3000);  // past 15 s without the door opening
   CHECK(r.locked());
   CHECK(r.count(EventType::AutoRelock) >= 1);
   CHECK(r.side(r.a) == Side::Outside);  // unchanged: retrying works
@@ -736,14 +736,13 @@ TEST(v1_lockout_is_shared_across_links) {
   r.b.connected = true;
   r.app.on_connect(1, r.now);
   r.app.on_connect(2, r.now);
-  uint8_t junk[1 + kSigLen] = {0};
+  uint8_t junk[1 + kSigLen] = {0};  // key 0 with a bad signature
   for (int i = 0; i < 5; ++i) {
-    r.app.on_auth_response(i % 2 == 0 ? 1 : 2, junk, sizeof(junk), r.now);
-    r.answer(i % 2 == 0 ? r.a : r.b, r.app.on_connect(i % 2 == 0 ? 1 : 2, r.now));  // fresh nonces
-    if (i < 4) continue;
+    uint16_t conn = static_cast<uint16_t>(1 + i % 2);  // alternate links: no extra guesses per link
+    r.app.on_connect(conn, r.now);
+    CHECK(r.app.on_auth_response(conn, junk, sizeof(junk), r.now) == AuthResult::BadSignature);
   }
-  r.app.on_connect(1, r.now);
-  CHECK(r.app.on_auth_response(1, junk, sizeof(junk), r.now) == AuthResult::LockedOut);
+  CHECK(r.answer(r.a, r.app.on_connect(1, r.now)) == AuthResult::LockedOut);  // even a valid answer
 }
 
 TEST(v1_enrollment_only_inside_window) {
