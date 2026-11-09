@@ -1,13 +1,17 @@
 #pragma once
-// When to unlock automatically. Kept as a pure function so every rule is unit-testable.
+// When to unlock automatically. A pure function so every rule is unit-testable.
 //
-// Mode A (ApproachOnly):        authenticated + genuine arrival + phone Close            -> unlock
-// Mode B (ApproachAndIntent):   authenticated + genuine arrival + phone Near or Close
-//                               + handle intent detected                                -> unlock
-// Both modes also require the bolt to be Locked (nothing to do otherwise).
-// The caller must call PresenceTracker::consume_arrival() after acting on Unlock.
+// For one connected phone:
+//   authenticated  logged in with an enrolled key
+//   armed          its login counted as a genuine ARRIVAL (it had been gone long enough), and
+//                  the arrival hasn't been used or expired
+//   at_door        it reached the Close zone while armed, recently, and is still Close
+//   context_ok     what the phone signed about its home geofence doesn't contradict an arrival
+//   locked         the bolt is locked (nothing to do otherwise)
+// Mode A (ApproachOnly) unlocks on all of the above. Mode B (ApproachAndIntent) also needs a
+// handle touch. The caller disarms the phone after acting on Unlock.
 
-#include "presence.h"
+#include <cstdint>
 
 namespace slock {
 
@@ -15,24 +19,19 @@ enum class UnlockMode : uint8_t { ApproachOnly, ApproachAndIntent };
 
 struct PolicyInputs {
   bool authenticated = false;
-  bool arrival = false;   // PresenceTracker::arrival_active()
-  Zone zone = Zone::Gone;
-  bool intent = false;    // IntentDetector fired this tick
+  bool armed = false;
+  bool at_door = false;
+  bool context_ok = false;
+  bool intent = false;
   bool locked = false;
 };
 
 enum class Decision : uint8_t { None, Unlock };
 
 inline Decision decide(UnlockMode mode, const PolicyInputs& in) {
-  if (!in.authenticated || !in.arrival || !in.locked) return Decision::None;
-  switch (mode) {
-    case UnlockMode::ApproachOnly:
-      return in.zone == Zone::Close ? Decision::Unlock : Decision::None;
-    case UnlockMode::ApproachAndIntent:
-      return (in.intent && (in.zone == Zone::Near || in.zone == Zone::Close)) ? Decision::Unlock
-                                                                              : Decision::None;
-  }
-  return Decision::None;
+  if (!in.authenticated || !in.armed || !in.at_door || !in.context_ok || !in.locked) return Decision::None;
+  if (mode == UnlockMode::ApproachAndIntent && !in.intent) return Decision::None;
+  return Decision::Unlock;
 }
 
 }  // namespace slock

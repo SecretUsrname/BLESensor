@@ -124,6 +124,14 @@ All of it can be built and tested **without the mechanism**, using an ESP32 dev 
 - **Deliverables:** firmware repo with passing host tests, protocol spec and test vectors, approach simulator with tuned parameters, Android app (beta), iOS wake-up proof-of-concept.
 - **Status (2026-11-08):** firmware skeleton in `firmware/`. Portable core done with 30 host tests passing: lost-motion drive, lock state machine, auth session, presence and arrival, unlock policy, placeholder intent detector. The board layer (bench serial console) compiles for the XIAO (Adafruit nRF52 core) but hasn't run on hardware. Still to do: BLE GATT, P-256 verify, flash persistence, IMU, sleep. See `firmware/README.md`.
 - **Digital twin (2026-11-08):** `twin/` runs the real firmware core (`slock::App`, 36 host tests) against the simulated CAD mechanism, with a live animated page and a Windows Bluetooth GATT server so an iPhone can connect before the XIAO exists. Scenarios verified in the twin: arrival plus handle touch unlocks; a phone inside never does; jam, power cycle and low battery behave safely. Confirmed from an iPhone with nRF Connect (2026-11-08): connection, status notifications and RSSI telemetry work. See `twin/README.md`.
+- **Auto-unlock rules v2 (2026-11-09):**
+  - arrival judged per phone at login
+  - armed for 5 min, but unlocking only in a 30 s window at the door (Close)
+  - signed home-geofence context from the phone, against relays and phones that never left
+  - up to 3 phones, with a shared login lockout
+  - key revocation; approach-only mode needs a door sensor and auto-relock
+
+  48 host tests, each new rule verified to be caught when broken. Scenario analysis in `docs/scenarios.md`. UWB is the next step for inside/outside and full relay resistance.
 - **iOS app v0.1 (2026-11-08):** `ios/` covers Secure Enclave pairing and login (key usable while the phone is locked), background reconnection via state restoration plus a pending connect, controls, an event log and background notifications. Builds in GitHub Actions (`.github/workflows/ios-build.yml`, first run succeeded); not yet run on an iPhone. Repo: github.com/SecretUsrname/BLESensor. The protocol it uses is verified against the firmware core by `twin/test_protocol.py` (20 checks).
 - **Gate G4:** end-to-end demo on a dev board: phone approaches, authenticates, arms, and a simulated intent triggers a mock "unlock" LED within the latency budget; false-unlock rate in replay below target (set target in Phase 0, e.g. under 1 per 1000 walk-bys).
 

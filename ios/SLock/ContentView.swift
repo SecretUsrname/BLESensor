@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject private var lock = LockManager.shared
     @ObservedObject private var log = EventLog.shared
+    @ObservedObject private var home = HomeLocation.shared
     @State private var mode: UnlockMode = .approachAndIntent
 
     var body: some View {
@@ -42,10 +43,30 @@ struct ContentView: View {
                     row("Signal (phone sees)", lock.phoneRSSI.map { "\($0) dBm" } ?? "–")
                     row("Zone (lock sees)", lock.status?.zoneName ?? "–")
                     row("Arrival", lock.status?.arrivalActive == true ? "armed" : "–")
+                    row("At the door", lock.status?.atDoor == true ? "yes" : "–")
+                    row("Home context", lock.status.map { $0.contextOK ? "accepted" : "refused" } ?? "–")
                     row("Mode", lock.status?.modeLabel ?? "–")
                     row("Battery", lock.status.map { "\($0.batteryMv) mV" } ?? "–")
                     row("Last command", lock.status?.lastCmdName ?? "–")
                     row("Last login", lock.status?.lastAuthName ?? "–")
+                }
+
+                Section {
+                    row("Home", home.summary)
+                    row("Location permission", home.permissionText)
+                    Button(home.homeSet ? "Move home to where I am now" : "Set home to where I am now") {
+                        home.setHomeHere()
+                    }
+                    if home.authorization != .authorizedAlways {
+                        Button("Allow location \"Always\"") { home.requestAlways() }
+                    }
+                    if home.homeSet {
+                        Button("Clear home", role: .destructive) { home.clearHome() }
+                    }
+                } header: {
+                    Text("Home")
+                } footer: {
+                    Text("Your phone signs whether it just arrived home into every login. The lock refuses auto-unlock if the phone says it isn't home (a relay attack) or has been home for over 10 minutes (it never left). Needs \"Always\" location so iOS can tell the app when you arrive.")
                 }
 
                 Section {

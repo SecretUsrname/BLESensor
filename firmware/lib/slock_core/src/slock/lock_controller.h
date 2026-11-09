@@ -44,6 +44,7 @@ class LockController {
   uint32_t change_count() const { return changes_; }  // bumps on every state change (for BLE notify)
   void set_auto_relock_ms(uint32_t ms) { cfg_.auto_relock_ms = ms; }
   uint32_t auto_relock_ms() const { return cfg_.auto_relock_ms; }
+  bool has_door_sensor() const { return door_ != nullptr; }
 
  private:
   bool busy() const { return drive_.op() != DriveOp::None; }

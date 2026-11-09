@@ -105,6 +105,31 @@ TEST(auth_session_expires_and_ends_on_disconnect) {
   CHECK(!r.s.authenticated(1));
 }
 
+TEST(auth_v2_signs_home_context) {
+  Rig r;
+  const uint8_t* nonce = r.s.new_challenge();
+  uint8_t ctx[kContextLen] = {0x03, 4};  // has home, inside, entered 4 min ago
+  uint8_t msg[kAuthMsgLenV2];
+  Session::build_message_v2(kLockId, nonce, ctx, msg);
+  uint8_t sig[kSigLen];
+  fake_sign(r.pub, msg, kAuthMsgLenV2, sig);
+
+  uint8_t forged[kContextLen] = {0x03, 0};  // attacker tries to change the context
+  CHECK(r.s.respond_with_context(0, forged, sig, 0) == AuthResult::BadSignature);
+
+  nonce = r.s.new_challenge();
+  Session::build_message_v2(kLockId, nonce, ctx, msg);
+  fake_sign(r.pub, msg, kAuthMsgLenV2, sig);
+  CHECK(r.s.respond_with_context(0, ctx, sig, 0) == AuthResult::Ok);
+  CHECK(r.s.context().provided);
+  CHECK(r.s.context().has_home);
+  CHECK(r.s.context().inside_home);
+  CHECK(r.s.context().minutes_since_entry == 4);
+
+  r.s.end();
+  CHECK(!r.s.context().provided);
+}
+
 TEST(keystore_add_remove_capacity) {
   KeyStore ks;
   uint8_t pub[kPubKeyLen] = {};

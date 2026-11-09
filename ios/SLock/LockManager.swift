@@ -61,6 +61,7 @@ final class LockManager: NSObject, ObservableObject {
         _keyId = Published(initialValue: defaults.object(forKey: Keys.keyId) as? Int)
         _notifyInBackground = Published(initialValue: defaults.bool(forKey: Keys.notify))
         super.init()
+        HomeLocation.shared.onChange = { [weak self] in self?.homeContextChanged() }
         central = CBCentralManager(delegate: self, queue: nil, options: [
             CBCentralManagerOptionRestoreIdentifierKey: "dev.slock.central",
             CBCentralManagerOptionShowPowerAlertKey: true,
@@ -84,6 +85,17 @@ final class LockManager: NSObject, ObservableObject {
     func setMode(_ mode: UnlockMode) { send(.setMode, [mode.rawValue]) }
 
     func forget() {
+        // Revoke this phone's key on the lock first, so a forgotten phone can't log in again.
+        if phase == .ready, let kid = keyId, let p = peripheral, let c = chars[SLockGATT.command] {
+            p.writeValue(Data([Opcode.revokeKey.rawValue, UInt8(kid)]), for: c, type: .withResponse)
+            log.add("revoked this phone's key (\(kid)) on the lock")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.finishForget() }
+        } else {
+            finishForget()
+        }
+    }
+
+    private func finishForget() {
         let old = peripheral
         peripheral = nil
         chars = [:]
@@ -105,6 +117,14 @@ final class LockManager: NSObject, ObservableObject {
             guard let self, let p = self.peripheral, p.state == .connected else { return }
             p.readRSSI()
         }
+    }
+
+    /// The home geofence state changed (entered, left, permission): ask the lock for a fresh challenge
+    /// so the next signed login carries the new context.
+    private func homeContextChanged() {
+        guard phase == .ready, let p = peripheral, let c = chars[SLockGATT.command] else { return }
+        p.writeValue(Data([Opcode.rechallenge.rawValue]), for: c, type: .withResponse)
+        log.add("home status changed (\(HomeLocation.shared.summary)): re-sending it to the lock")
     }
 
     // MARK: Connection management
@@ -183,11 +203,14 @@ final class LockManager: NSObject, ObservableObject {
         }
         guard let p = peripheral, let c = chars[SLockGATT.response] else { return }
         do {
-            let message = Data("SLK1".utf8) + lockId + nonce
+            // v2 login: the home context is signed together with the challenge, so it can't be altered.
+            let context = HomeLocation.shared.contextBytes
+            let message = Data("SLK2".utf8) + lockId + nonce + context
             let signature = try KeyManager.shared.sign(message)
             lastSignedNonce = nonce
-            p.writeValue(Data([UInt8(kid)]) + signature, for: c, type: .withResponse)
-            log.add("signed the lock's challenge as key \(kid)\(isBackground ? " (in background)" : "")")
+            p.writeValue(Data([UInt8(kid)]) + context + signature, for: c, type: .withResponse)
+            log.add("signed the lock's challenge as key \(kid), home: \(HomeLocation.shared.summary)"
+                    + (isBackground ? " (in background)" : ""))
         } catch {
             log.add("signing failed: \(error)")
         }
@@ -227,8 +250,11 @@ final class LockManager: NSObject, ObservableObject {
         }
         if old?.zone != s.zone { log.add("lock sees this phone as \(s.zoneName)") }
         if old?.arrivalActive != s.arrivalActive, s.arrivalActive {
-            log.add("lock detected an ARRIVAL: armed")
-            if isBackground { notify("Armed", "Touch the handle to unlock") }
+            log.add("lock detected an ARRIVAL: armed (home context \(s.contextOK ? "accepted" : "REFUSED"))")
+            if isBackground { notify("Armed", "Walk up to the door and touch the handle") }
+        }
+        if old?.atDoor != s.atDoor {
+            log.add(s.atDoor ? "at the door: unlock window open" : "unlock window closed")
         }
         if let op = awaitingCommand {
             log.add("\(op) result: \(s.lastCmdName)")

@@ -11,6 +11,13 @@ A SwiftUI app that pairs with the lock (or the digital twin on your laptop), log
 - **Controls:** Unlock and Lock buttons, unlock-mode picker, lock status (state, zone, arrival, battery, last results).
 - **Debug:** an event log you can share as a file, and optional notifications for background events. There's no debugger with a sideloaded app, so this is how you see what happened in your pocket.
 
+## Home location (v0.2)
+
+- **Set it up:** in the app's **Home** section, tap *Set home to where I am now* while at home, and allow location **Always**.
+- **What the phone signs:** every login carries "am I inside the home area, and how many minutes since I entered it". The lock uses that to refuse relayed phones (they're not home) and phones that never left (home for hours). See `docs/scenarios.md`.
+- **Setting home doesn't count as arriving.** To test a real arrival, leave the 150 m area and come back. With the twin, the simulated phone's context selector is quicker.
+- **Older versions still work:** they log in without context (v1), and the lock accepts them unless *require home context* is on.
+
 ## Status
 
 - **Compiles:** the GitHub Actions build succeeded on the first run (2026-11-08) and produced a 101 KB unsigned `.ipa`.

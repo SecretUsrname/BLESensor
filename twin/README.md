@@ -28,11 +28,16 @@ Then open http://localhost:8765. The twin calibrates the simulated lock on start
 
 ## Things to try on the page
 
+Scenario buttons drive the **simulated phone**. Your real phone can stay connected alongside it, like two people in one household. The rules behind each result are in `docs/scenarios.md`.
+
 | Try | Expect |
 |---|---|
-| **Arrive home**, then **Touch handle** | The phone was away for over a minute, logs in with a real P-256 signature, walks from far to near to close. On the handle touch: auto-unlock, the bolt throws in about 0.8 s, and the gear parks. |
-| **Phone inside**, then **Touch handle** | Nothing happens: the phone never left, so there is no arrival. |
-| Unlock mode: **approach only**, then **Arrive home** | Unlocks on reaching "close", with no handle touch. |
+| **Arrive home**, then **Touch handle** at the door | Armed while still far (lobby), unlock window opens only at the door; touch → auto-unlock, the bolt throws in about 0.8 s, the gear parks |
+| **Walk past door** (runs itself) | Window closes when the phone moves on; the handle touch is refused |
+| **Relay attack** (runs itself) | The relayed phone looks close but signs "not at home": refused |
+| **Phone inside**, then **Touch handle** | Nothing: not an arrival, and "home for hours" is refused |
+| Simulated phone **home context** selector | Try "none (old app)" with **require home context** on and off |
+| Unlock mode **approach only** | Refused until auto-relock is set (needs a door sensor) |
 | **Jam bolt at 40°**, then **App: unlock** | Reports jammed, the gear still parks, and **Turn to unlocked** (the key) finishes the job. |
 | Knob at 45°, then **Power cycle** | Needs homing and nothing moves. Turn the knob to an end and it homes itself. |
 | Battery below 4400 mV, then **App: lock** | Refused with `low-battery`; unlocking still works. |

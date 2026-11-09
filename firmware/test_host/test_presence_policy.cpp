@@ -5,116 +5,60 @@
 
 using namespace slock;
 
-TEST(arrival_needs_a_real_absence) {
-  PresenceConfig cfg;
-  PresenceTracker t(cfg);
-  t.begin(0);
-
-  t.on_connect(10000);  // 10 s after boot: lock just rebooted, phone was probably here
-  CHECK(!t.arrival_active(10000));
-
-  t.on_disconnect(20000);
-  t.on_connect(30000);  // brief BLE drop while the phone is inside
-  CHECK(!t.arrival_active(30000));
-
-  t.on_disconnect(40000);
-  t.on_connect(40000 + 60000);  // away a full minute, then back
-  CHECK(t.arrival_active(100000));
-  CHECK(t.arrival_active(100000 + 29999));
-  CHECK(!t.arrival_active(100000 + 30000));  // window over
-}
-
-TEST(away_time_is_adjustable) {
-  PresenceConfig cfg;
-  PresenceTracker t(cfg);
-  t.begin(0);
-  t.set_min_away_ms(10000);
-  CHECK(t.min_away_ms() == 10000);
-  t.on_connect(9999);
-  CHECK(!t.arrival_active(9999));  // 9.999 s since boot: not long enough
-  t.on_disconnect(20000);
-  t.on_connect(30000);  // away exactly 10 s
-  CHECK(t.arrival_active(30000));
-}
-
-TEST(phone_sitting_inside_never_arms) {
-  PresenceConfig cfg;
-  PresenceTracker t(cfg);
-  t.begin(0);
-  t.on_connect(5000);
-  for (Millis now = 5000; now < 3600000; now += 1000) t.on_rssi(-50, now);  // right by the door for an hour
-  CHECK(t.zone() == Zone::Close);
-  CHECK(!t.arrival_active(3600000));
-}
-
-TEST(arrival_consumed_and_cleared_on_disconnect) {
-  PresenceConfig cfg;
-  PresenceTracker t(cfg);
-  t.begin(0);
-  t.on_connect(70000);
-  CHECK(t.arrival_active(70000));
-  t.consume_arrival();
-  CHECK(!t.arrival_active(70001));
-
-  t.on_disconnect(80000);
-  t.on_connect(200000);
-  CHECK(t.arrival_active(200000));
-  t.on_disconnect(200500);
-  CHECK(!t.arrival_active(200500));
-}
-
 TEST(zones_use_hysteresis) {
   PresenceConfig cfg;
   cfg.ema_alpha = 1.f;  // no smoothing, to test thresholds exactly
-  PresenceTracker t(cfg);
-  t.begin(0);
-  t.on_connect(0);
-  t.on_rssi(-90, 0);
-  CHECK(t.zone() == Zone::Far);
-  t.on_rssi(-78, 0);
-  CHECK(t.zone() == Zone::Near);
-  t.on_rssi(-81, 0);
-  CHECK(t.zone() == Zone::Near);  // within hysteresis
-  t.on_rssi(-83, 0);
-  CHECK(t.zone() == Zone::Far);
-  t.on_rssi(-60, 0);
-  CHECK(t.zone() == Zone::Close);
-  t.on_rssi(-68, 0);
-  CHECK(t.zone() == Zone::Close);  // within hysteresis
-  t.on_rssi(-70, 0);
-  CHECK(t.zone() == Zone::Near);
-  t.on_disconnect(1);
-  CHECK(t.zone() == Zone::Gone);
+  ZoneTracker z(&cfg);
+  CHECK(z.zone() == Zone::Gone);
+  z.on_rssi(-50);
+  CHECK(z.zone() == Zone::Gone);  // ignored while disconnected
+  z.reset();
+  CHECK(z.zone() == Zone::Far);
+  z.on_rssi(-90);
+  CHECK(z.zone() == Zone::Far);
+  z.on_rssi(-78);
+  CHECK(z.zone() == Zone::Near);
+  z.on_rssi(-81);
+  CHECK(z.zone() == Zone::Near);  // within hysteresis
+  z.on_rssi(-83);
+  CHECK(z.zone() == Zone::Far);
+  z.on_rssi(-60);
+  CHECK(z.zone() == Zone::Close);
+  z.on_rssi(-68);
+  CHECK(z.zone() == Zone::Close);  // within hysteresis
+  z.on_rssi(-70);
+  CHECK(z.zone() == Zone::Near);
+  z.clear();
+  CHECK(z.zone() == Zone::Gone);
+}
+
+TEST(rssi_is_smoothed) {
+  PresenceConfig cfg;  // alpha 0.3
+  ZoneTracker z(&cfg);
+  z.reset();
+  z.on_rssi(-60);
+  CHECK_NEAR(z.rssi(), -60, 1e-4);  // first reading taken as-is
+  z.on_rssi(-90);
+  CHECK_NEAR(z.rssi(), -69, 1e-4);  // moves 30% of the way
 }
 
 TEST(policy_rules) {
-  PolicyInputs in;
-  in.authenticated = true;
-  in.arrival = true;
-  in.locked = true;
-  in.zone = Zone::Near;
+  PolicyInputs ok;
+  ok.authenticated = ok.armed = ok.at_door = ok.context_ok = ok.locked = true;
+  CHECK(decide(UnlockMode::ApproachOnly, ok) == Decision::Unlock);
+  CHECK(decide(UnlockMode::ApproachAndIntent, ok) == Decision::None);  // needs a handle touch
+  PolicyInputs touched = ok;
+  touched.intent = true;
+  CHECK(decide(UnlockMode::ApproachAndIntent, touched) == Decision::Unlock);
 
-  CHECK(decide(UnlockMode::ApproachOnly, in) == Decision::None);  // needs Close
-  in.zone = Zone::Close;
-  CHECK(decide(UnlockMode::ApproachOnly, in) == Decision::Unlock);
-
-  in.zone = Zone::Near;
-  CHECK(decide(UnlockMode::ApproachAndIntent, in) == Decision::None);  // needs intent
-  in.intent = true;
-  CHECK(decide(UnlockMode::ApproachAndIntent, in) == Decision::Unlock);
-  in.zone = Zone::Far;
-  CHECK(decide(UnlockMode::ApproachAndIntent, in) == Decision::None);
-
-  in.zone = Zone::Close;
-  PolicyInputs x = in;
-  x.authenticated = false;
-  CHECK(decide(UnlockMode::ApproachAndIntent, x) == Decision::None);
-  x = in;
-  x.arrival = false;
-  CHECK(decide(UnlockMode::ApproachAndIntent, x) == Decision::None);
-  x = in;
-  x.locked = false;
-  CHECK(decide(UnlockMode::ApproachAndIntent, x) == Decision::None);
+  bool PolicyInputs::*required[] = {&PolicyInputs::authenticated, &PolicyInputs::armed, &PolicyInputs::at_door,
+                                    &PolicyInputs::context_ok, &PolicyInputs::locked};
+  for (auto field : required) {
+    PolicyInputs x = touched;
+    x.*field = false;
+    CHECK(decide(UnlockMode::ApproachAndIntent, x) == Decision::None);
+    CHECK(decide(UnlockMode::ApproachOnly, x) == Decision::None);
+  }
 }
 
 TEST(intent_detects_bursts_not_drift) {

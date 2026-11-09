@@ -26,6 +26,8 @@ targets:
       properties:
         CFBundleDisplayName: SLock
         NSBluetoothAlwaysUsageDescription: SLock uses Bluetooth to talk to your door lock and unlock it as you arrive.
+        NSLocationWhenInUseUsageDescription: SLock uses your home location to tell your lock when you have genuinely arrived home.
+        NSLocationAlwaysAndWhenInUseUsageDescription: SLock notices when you arrive home, even when the app is closed, so your lock knows a nearby phone really just came home and isn't being relayed.
         UIBackgroundModes: [bluetooth-central]
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]

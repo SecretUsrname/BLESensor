@@ -119,34 +119,46 @@
       <h2>Scenarios</h2>
       <div class="row">
         <button class="primary" onclick="api('scenario','arrive')">Arrive home</button>
+        <button onclick="api('scenario','walk_past')">Walk past door</button>
+        <button onclick="api('scenario','relay')">Relay attack</button>
         <button onclick="api('scenario','inside')">Phone inside</button>
         <button onclick="api('scenario','leave')">Leave</button>
         <button class="primary" onclick="api('intent')">Touch handle</button>
       </div>
-      <p class="note">Arrive home fast-forwards a minute of absence, connects the simulated phone (real P-256 login), and walks it up to the door. In approach + intent mode, press Touch handle at the door.</p>
+      <p class="note">Scenarios drive the <b>simulated</b> phone (real P-256 login); your real phone keeps working alongside it. Arrive home: away long enough, armed in the lobby, then walks to the door. Press Touch handle once it's at the door. Walk past and Relay attack run by themselves and report the result in the log.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Phones</h2>
+      <div class="grid2" style="gap:10px">
+        <div><b>Real phone</b> <span class="note">(Bluetooth)</span><div class="kv" id="ph_ble" style="margin-top:6px"></div></div>
+        <div><b>Simulated phone</b><div class="kv" id="ph_sim" style="margin-top:6px"></div></div>
+      </div>
+      <p class="note">armed = genuine arrival (5 min max) · at door = unlock window (30 s, only while Close) · context = what the phone signed about its home geofence</p>
     </div>
 
     <div class="grid2">
       <div class="panel">
-        <h2>Phone</h2>
-        <div class="kv">
-          <span>link</span><span id="link"></span>
-          <span>login</span><span id="auth"></span>
-          <span>zone</span><span id="zone"></span>
-          <span>rssi</span><span><div class="bar"><div id="rssibar"></div></div></span>
-          <span>arrival</span><span><div class="bar"><div id="arrbar" style="background:var(--ok)"></div></div></span>
-          <span>auto-unlocks</span><span id="autos"></span>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <button onclick="api('sim_connect')">Connect sim phone</button>
+        <h2>Simulated phone</h2>
+        <div class="row">
+          <button onclick="api('sim_connect')">Connect</button>
           <button onclick="api('sim_disconnect')">Disconnect</button>
         </div>
-        <div class="row"><span class="label">sim RSSI <b id="simrssiv"></b></span>
+        <div class="row"><span class="label">RSSI <b id="simrssiv"></b></span>
           <input id="simrssi" type="range" min="-100" max="-40" value="-90" oninput="api('sim_rssi', +this.value)"></div>
+        <div class="row"><span class="label">home context</span>
+          <select id="simctx" onchange="api('sim_ctx', this.value)">
+            <option value="just_home">home, arrived 1 min ago</option>
+            <option value="home_hours">home for hours</option>
+            <option value="not_home">not at home</option>
+            <option value="no_geofence">no home set up</option>
+            <option value="none">none (old app)</option>
+          </select></div>
         <div class="row">
           <button onclick="api('cmd','unlock')">App: unlock</button>
           <button onclick="api('cmd','lock')">App: lock</button>
         </div>
+        <div class="kv"><span>auto-unlocks</span><span id="autos"></span></div>
       </div>
 
       <div class="panel">
@@ -186,6 +198,7 @@
           <option value="10">10 s (testing)</option><option value="30">30 s</option><option value="60">60 s (default)</option>
         </select>
       </div>
+      <div class="row"><label><input id="reqctx" type="checkbox" onchange="api('require_ctx', this.checked)"> require home context (refuse phones that don't report it)</label></div>
       <div class="row">
         <button onclick="api('calibrate')">Calibrate</button>
         <button onclick="api('power_cycle')">Power cycle</button>
@@ -202,7 +215,6 @@
       <h2>Real phone over Bluetooth</h2>
       <div class="kv">
         <span>status</span><span id="ble"></span>
-        <span>last login / cmd</span><span id="lastres"></span>
       </div>
       <div class="row"><label><input id="bleov" type="checkbox" onchange="bleOverride()"> use this slider instead of the phone's RSSI telemetry</label></div>
       <div class="row"><span class="label">RSSI <b id="blerssiv"></b></span>
@@ -281,6 +293,21 @@ async function poll() {
   finally { polling = false; }
 }
 
+function renderPhone(sel, p) {
+  const yes = (b) => (b ? '<b style="color:var(--ok)">yes</b>' : 'no');
+  const rows = !p.used ? [['connection', 'not connected']] : [
+    ['login', p.authenticated ? `yes (key ${p.key_id})` : (p.key_id >= 0 ? `renewing (key ${p.key_id})` : 'no')],
+    ['zone', `${p.zone_name} · ${p.rssi > -127 ? p.rssi.toFixed(0) + ' dBm' : 'no rssi yet'}`],
+    ['armed', p.armed ? `<b style="color:var(--ok)">yes</b> · ${(p.armed_ms_left / 1000).toFixed(0)} s left` : 'no'],
+    ['at door', yes(p.at_door)],
+    ['context', `${p.context_text} · ${p.ctx_ok ? '<span style="color:var(--ok)">accepted</span>' : '<span style="color:var(--bad)">refused</span>'}`],
+    ['last login / cmd', `${p.last_auth_name} / ${p.last_cmd_name}`],
+  ];
+  const html = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
+  const el = $(sel);
+  if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+}
+
 function render(s) {
   // mechanism: gear angle in CAD frame = sim gear position + deadband (slot spans [-db, travel+db] on the gear)
   const gearDeg = s.gear + P.deadband;
@@ -308,13 +335,12 @@ function render(s) {
   $('#motorbar').style.background = s.motor_duty === 0 ? 'var(--muted)' : (s.stalled ? 'var(--bad)' : 'var(--warn)');
   $('#enc').textContent = `${s.encoder} / ${s.park_position}`;
 
-  $('#link').textContent = s.link ? (s.link === 'sim' ? 'simulated phone' : 'REAL phone (Bluetooth)') : 'none';
-  $('#auth').textContent = s.authenticated ? `yes (key ${s.key_id})` : 'no';
-  $('#zone').textContent = `${s.zone_name}${s.connected ? ` · ${s.rssi.toFixed(0)} dBm (smoothed)` : ''}`;
-  $('#rssibar').style.width = (s.connected ? Math.max(0, Math.min(1, (s.rssi + 100) / 60)) * 100 : 0) + '%';
-  $('#arrbar').style.width = (s.arrival_ms_left / 30000) * 100 + '%';
+  renderPhone('#ph_ble', s.phones.ble);
+  renderPhone('#ph_sim', s.phones.sim);
   $('#autos').textContent = s.auto_unlocks;
   $('#simrssiv').textContent = s.sim_rssi ?? '';
+  if (document.activeElement !== $('#simctx')) $('#simctx').value = s.sim_ctx;
+  $('#reqctx').checked = !!s.require_ctx;
   if (document.activeElement !== $('#simrssi') && s.sim_rssi != null) $('#simrssi').value = s.sim_rssi;
   $('#knobv').textContent = `${s.bolt.toFixed(0)}°`;
   if (document.activeElement !== $('#knob')) $('#knob').value = s.bolt;
@@ -327,7 +353,6 @@ function render(s) {
   $('#cal').textContent = `${s.calibrated ? 'yes' : 'no'} / ${s.homed ? 'yes' : 'no'}`;
   $('#keys').textContent = s.key_count + (s.enroll_open ? ' · enrolment OPEN' : '');
   $('#ble').textContent = s.ble_status;
-  $('#lastres').textContent = `${s.last_auth_name} / ${s.last_cmd_name}`;
   $('#blerssiv').textContent = s.ble_rssi_override ?? 'phone';
 
   const log = $('#log');

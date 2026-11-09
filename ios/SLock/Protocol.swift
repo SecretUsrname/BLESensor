@@ -6,7 +6,7 @@ enum SLockGATT {
     private static let base = "-14E4-4BA6-8271-A968F0B7F324"
     static let service = CBUUID(string: "17D50001" + base)
     static let challenge = CBUUID(string: "17D50002" + base)  // read/notify: lock_id(8) | nonce(16)
-    static let response = CBUUID(string: "17D50003" + base)   // write: key_id(1) | signature(64)
+    static let response = CBUUID(string: "17D50003" + base)   // write: key_id(1) | context(2) | signature(64)
     static let command = CBUUID(string: "17D50004" + base)    // write: opcode | args
     static let status = CBUUID(string: "17D50005" + base)     // read/notify: StatusPacket (13 bytes)
     static let enroll = CBUUID(string: "17D50006" + base)     // write: public key (64)
@@ -19,6 +19,8 @@ enum Opcode: UInt8 {
     case calibrate = 0x03
     case setMode = 0x04
     case setRelock = 0x05
+    case revokeKey = 0x06
+    case rechallenge = 0x07
 }
 
 enum UnlockMode: UInt8, CaseIterable, Identifiable {
@@ -34,7 +36,8 @@ struct LockStatus: Equatable {
     static let lockStates = ["Uncalibrated", "Calibrating", "Homing", "Needs homing", "Locked", "Unlocked",
                              "Between", "Unlocking", "Locking", "Jammed"]
     static let zones = ["Gone", "Far", "Near", "Close"]
-    static let cmdResults = ["ok", "not logged in", "bad command", "busy", "not ready", "already there", "low battery"]
+    static let cmdResults = ["ok", "not logged in", "bad command", "busy", "not ready", "already there", "low battery",
+                             "not allowed"]
     static let authResults = ["ok", "no challenge", "unknown key", "bad signature", "locked out"]
 
     let lockState: UInt8
@@ -46,8 +49,10 @@ struct LockStatus: Equatable {
     let lastCmd: UInt8
     let lastAuth: UInt8
     let zone: UInt8
-    let arrivalActive: Bool
+    let arrivalActive: Bool  // this phone is armed (genuine arrival)
     let enrolmentOpen: Bool
+    let atDoor: Bool         // unlock window open
+    let contextOK: Bool      // the lock accepted this phone's home context
     let lastEnrolledId: Int
 
     init?(_ data: Data) {
@@ -64,6 +69,8 @@ struct LockStatus: Equatable {
         zone = b[10]
         arrivalActive = (b[11] & 1) != 0
         enrolmentOpen = (b[11] & 2) != 0
+        atDoor = (b[11] & 4) != 0
+        contextOK = (b[11] & 8) != 0
         lastEnrolledId = Int(Int8(bitPattern: b[12]))
     }
 

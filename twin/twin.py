@@ -3,12 +3,15 @@
 Runs the REAL firmware core (compiled into build/slock_twin.dll) against a simulated mechanism
 with the CAD geometry, and exposes it two ways:
 
-  * a web page (http://localhost:8765) that animates the mechanism and lets you play the phone,
-    the person at the door and the environment;
+  * a web page (http://localhost:8765) that animates the mechanism and lets you play a simulated
+    phone, the person at the door and the environment;
   * a real Bluetooth LE GATT server with the lock's service (firmware/.../protocol.h), so an
     iPhone can connect to this laptop as if it were the lock.
 
-Run:  twin\\.venv\\Scripts\\python.exe twin\\twin.py   [--no-ble] [--port 8765]
+The real phone (connection 1) and the simulated phone (connection 2) can be connected at the same
+time, like two people in one household.
+
+Run:  twin\\.venv\\Scripts\\python.exe twin\\twin.py   [--no-ble] [--port 8765] [--away SECONDS]
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ DLL_PATH = HERE / "build" / "slock_twin.dll"
 PARAMS_SCAD = ROOT / "mech" / "params.scad"
 KEYS_FILE = HERE / "enrolled_keys.json"
 
+BLE, SIM = 1, 2  # connection ids
 LOCK_STATES = ["uncalibrated", "calibrating", "homing", "needs-homing", "locked", "unlocked",
                "between", "unlocking", "locking", "jammed"]
 DRIVE_STATUS = ["idle", "busy", "ok", "jammed", "timeout", "not-homed", "not-calibrated",
@@ -44,8 +48,17 @@ ZONES = ["gone", "far", "near", "close"]
 MODES = ["approach-only", "approach+intent"]
 AUTH_RESULTS = ["ok", "no-challenge", "unknown-key", "bad-signature", "locked-out"]
 CMD_RESULTS = ["ok", "not-authenticated", "bad-command", "busy", "not-ready", "already-there",
-               "low-battery"]
+               "low-battery", "not-allowed"]
 REQUEST_RESULTS = ["accepted", "busy", "not-ready", "already-there", "low-battery"]
+
+# Home-context presets for the simulated phone: flags (bit0 has home, bit1 inside), minutes since entry.
+SIM_CONTEXTS = {
+    "none": None,                       # old app: v1 login, no context
+    "just_home": bytes([0x03, 1]),      # entered the home geofence a minute ago
+    "home_hours": bytes([0x03, 200]),   # has been home for hours
+    "not_home": bytes([0x01, 255]),     # phone is elsewhere (what a relayed phone reports)
+    "no_geofence": bytes([0x00, 255]),  # new app, but no home set up
+}
 
 UUID_BASE = "-14e4-4ba6-8271-a968f0b7f324"
 SERVICE_UUID = uuid.UUID("17d50001" + UUID_BASE)
@@ -83,23 +96,38 @@ def p256_pub64(key: ec.EllipticCurvePrivateKey) -> bytes:
     return n.x.to_bytes(32, "big") + n.y.to_bytes(32, "big")
 
 
+def login_response(key: ec.EllipticCurvePrivateKey, key_id: int, lock_id: bytes, nonce: bytes,
+                   ctx: bytes | None) -> bytes:
+    """What a phone writes to the Response characteristic (v1 without context, v2 with)."""
+    if ctx is None:
+        return bytes([key_id]) + p256_sign(key, b"SLK1" + lock_id + nonce)
+    return bytes([key_id]) + ctx + p256_sign(key, b"SLK2" + lock_id + nonce + ctx)
+
+
 # --------------------------------------------------------------------------- the firmware core
+
+class TwinLink(ctypes.Structure):
+    _fields_ = [
+        ("rssi", ctypes.c_float), ("armed_ms_left", ctypes.c_uint32), ("key_id", ctypes.c_int8),
+        ("used", ctypes.c_uint8), ("authenticated", ctypes.c_uint8), ("zone", ctypes.c_uint8),
+        ("armed", ctypes.c_uint8), ("at_door", ctypes.c_uint8), ("ctx_provided", ctypes.c_uint8),
+        ("ctx_has_home", ctypes.c_uint8), ("ctx_inside", ctypes.c_uint8), ("ctx_minutes", ctypes.c_uint8),
+        ("ctx_ok", ctypes.c_uint8), ("last_auth", ctypes.c_uint8), ("last_cmd", ctypes.c_uint8),
+    ]
+
 
 class TwinState(ctypes.Structure):
     # Must match struct TwinState in core/twin_api.cpp field for field.
     _fields_ = [
         ("sim_ms", ctypes.c_uint32), ("gear", ctypes.c_float), ("bolt", ctypes.c_float),
         ("travel", ctypes.c_float), ("slot_span", ctypes.c_float), ("hub_progress", ctypes.c_float),
-        ("rssi", ctypes.c_float), ("jam_at", ctypes.c_float), ("motor_duty", ctypes.c_float),
-        ("encoder", ctypes.c_int32), ("park_position", ctypes.c_int32),
-        ("arrival_ms_left", ctypes.c_uint32), ("auto_unlocks", ctypes.c_uint32),
-        ("changes", ctypes.c_uint32), ("auto_relock_ms", ctypes.c_uint32), ("min_away_ms", ctypes.c_uint32),
+        ("jam_at", ctypes.c_float), ("motor_duty", ctypes.c_float), ("encoder", ctypes.c_int32),
+        ("park_position", ctypes.c_int32), ("auto_unlocks", ctypes.c_uint32), ("changes", ctypes.c_uint32),
+        ("auto_relock_ms", ctypes.c_uint32), ("min_away_ms", ctypes.c_uint32), ("links", TwinLink * 2),
         ("battery_mv", ctypes.c_uint16), ("lock_state", ctypes.c_uint8), ("drive_status", ctypes.c_uint8),
-        ("zone", ctypes.c_uint8), ("connected", ctypes.c_uint8), ("authenticated", ctypes.c_uint8),
         ("mode", ctypes.c_uint8), ("door_closed", ctypes.c_uint8), ("calibrated", ctypes.c_uint8),
         ("homed", ctypes.c_uint8), ("enroll_open", ctypes.c_uint8), ("pushing", ctypes.c_uint8),
-        ("stalled", ctypes.c_uint8), ("key_id", ctypes.c_int8), ("last_cmd", ctypes.c_uint8),
-        ("last_auth", ctypes.c_uint8), ("key_count", ctypes.c_uint8),
+        ("stalled", ctypes.c_uint8), ("key_count", ctypes.c_uint8), ("require_ctx", ctypes.c_uint8),
     ]
 
 
@@ -115,7 +143,8 @@ class Core:
             raise SystemExit(f"{DLL_PATH} not found: run twin\\build.ps1 first")
         self._lib = ctypes.CDLL(str(DLL_PATH))
         if self._lib.twin_state_size() != ctypes.sizeof(TwinState):
-            raise SystemExit("TwinState layout mismatch between twin.py and twin_api.cpp")
+            raise SystemExit("TwinState layout mismatch between twin.py and twin_api.cpp: rebuild the DLL")
+        self.status_size = self._lib.twin_status_size()
         self._lock = threading.RLock()
 
         def _verify(pub, msg, length, sig):
@@ -126,7 +155,7 @@ class Core:
         self._lib.twin_create.restype = ctypes.c_void_p
         self._lib.twin_set_jam.argtypes = [ctypes.c_void_p, ctypes.c_float]
         self._lib.twin_turn_by_hand.argtypes = [ctypes.c_void_p, ctypes.c_float]
-        # Other calls pass explicit ctypes values (c_uint32, c_int, byte buffers) so no argtypes needed.
+        # Other calls pass explicit ctypes values (c_uint32, c_int, byte buffers).
         self._h = ctypes.c_void_p(self._lib.twin_create(self._verify_cb))
 
     def _call(self, name, *args):
@@ -141,26 +170,25 @@ class Core:
         self._call("twin_get_state", ctypes.byref(s))
         return s
 
-    def connect(self) -> bytes:
+    def connect(self, conn: int) -> bytes | None:
         buf = (ctypes.c_ubyte * 16)()
-        self._call("twin_connect", buf)
-        return bytes(buf)
+        return bytes(buf) if self._call("twin_connect", ctypes.c_int(conn), buf) else None
 
-    def disconnect(self) -> None:
-        self._call("twin_disconnect")
+    def disconnect(self, conn: int) -> None:
+        self._call("twin_disconnect", ctypes.c_int(conn))
 
-    def take_new_challenge(self) -> bytes | None:
+    def take_new_challenge(self, conn: int) -> bytes | None:
         buf = (ctypes.c_ubyte * 16)()
-        return bytes(buf) if self._call("twin_take_new_challenge", buf) else None
+        return bytes(buf) if self._call("twin_take_new_challenge", ctypes.c_int(conn), buf) else None
 
-    def auth(self, data: bytes) -> int:
-        return self._call("twin_auth", data, ctypes.c_uint32(len(data)))
+    def auth(self, conn: int, data: bytes) -> int:
+        return self._call("twin_auth", ctypes.c_int(conn), data, ctypes.c_uint32(len(data)))
 
-    def command(self, data: bytes) -> int:
-        return self._call("twin_command", data, ctypes.c_uint32(len(data)))
+    def command(self, conn: int, data: bytes) -> int:
+        return self._call("twin_command", ctypes.c_int(conn), data, ctypes.c_uint32(len(data)))
 
-    def rssi(self, dbm: int) -> None:
-        self._call("twin_rssi", ctypes.c_int(int(dbm)))
+    def rssi(self, conn: int, dbm: int) -> None:
+        self._call("twin_rssi", ctypes.c_int(conn), ctypes.c_int(int(dbm)))
 
     def enroll(self, pub: bytes) -> int:
         return self._call("twin_enroll", pub, ctypes.c_uint32(len(pub)))
@@ -168,9 +196,9 @@ class Core:
     def add_key(self, pub: bytes) -> int:
         return self._call("twin_add_key", pub)
 
-    def status_packet(self) -> bytes:
-        buf = (ctypes.c_ubyte * 13)()  # sizeof(slock::protocol::StatusPacket)
-        self._call("twin_status_packet", buf)
+    def status_packet(self, conn: int) -> bytes:
+        buf = (ctypes.c_ubyte * self.status_size)()
+        self._call("twin_status_packet", ctypes.c_int(conn), buf)
         return bytes(buf)
 
     def lock_id(self) -> bytes:
@@ -187,14 +215,17 @@ class Core:
     def calibrate(self) -> int:
         return self._call("twin_calibrate")
 
-    def set_mode(self, mode: int) -> None:
-        self._call("twin_set_mode", ctypes.c_int(mode))
+    def set_mode(self, mode: int) -> bool:
+        return bool(self._call("twin_set_mode", ctypes.c_int(mode)))
 
     def set_relock(self, ms: int) -> None:
         self._call("twin_set_relock", ctypes.c_uint32(ms))
 
     def set_min_away(self, ms: int) -> None:
         self._call("twin_set_min_away", ctypes.c_uint32(ms))
+
+    def set_require_context(self, on: bool) -> None:
+        self._call("twin_set_require_context", ctypes.c_int(1 if on else 0))
 
     def turn_by_hand(self, bolt: float) -> bool:
         return bool(self._call("twin_turn_by_hand", ctypes.c_float(bolt)))
@@ -227,19 +258,32 @@ def load_cad_params() -> dict:
                               "rose_d", "housing_w", "housing_y0", "housing_y1")}
 
 
+def context_text(link: TwinLink) -> str:
+    if not link.ctx_provided:
+        return "none (old login)"
+    if not link.ctx_has_home:
+        return "no home set up"
+    if not link.ctx_inside:
+        return "NOT at home"
+    mins = "?" if link.ctx_minutes == 255 else f"{link.ctx_minutes} min"
+    return f"home, arrived {mins} ago"
+
+
 # --------------------------------------------------------------------------- the twin
 
 class Twin:
     def __init__(self, use_ble: bool, min_away_s: int | None = None) -> None:
         self.core = Core()
-        self.min_away_s = min_away_s
         self.loop: asyncio.AbstractEventLoop | None = None
         self.log: deque[dict] = deque(maxlen=300)
-        self.link: str | None = None          # None, "sim" or "ble"
+        self.sim_connected = False
+        self.ble_connected = False
         self.scenario: asyncio.Task | None = None
         self.scenario_name = ""
-        self.sim_rssi: int | None = None      # continuously reported while the sim phone is connected
+        self.sim_rssi: int | None = None      # reported continuously while the sim phone is connected
+        self.sim_ctx_name = "just_home"
         self.ble_rssi_override: int | None = None
+        self.min_away_s = min_away_s
         self.ble = BleServer(self) if use_ble else None
         self.ble_status = "disabled (--no-ble)" if not use_ble else "starting"
         self.lock_id = self.core.lock_id()
@@ -271,26 +315,31 @@ class Twin:
 
     def _watch(self) -> None:
         s = self.core.state()
-        cur = {
-            "lock": LOCK_STATES[s.lock_state], "zone": ZONES[s.zone], "auth": bool(s.authenticated),
-            "connected": bool(s.connected), "arrival": s.arrival_ms_left > 0, "auto": s.auto_unlocks,
-            "link": self.link,
-        }
+        cur = {"lock": LOCK_STATES[s.lock_state], "auto": s.auto_unlocks}
+        for name, link in (("real phone", s.links[0]), ("sim phone", s.links[1])):
+            cur[name] = (bool(link.used), bool(link.authenticated), ZONES[link.zone], bool(link.armed),
+                         bool(link.at_door), bool(link.ctx_ok))
         p = self._prev
         if p:
             if cur["lock"] != p["lock"]:
                 extra = f" (drive: {DRIVE_STATUS[s.drive_status]})" if cur["lock"] in ("locked", "unlocked", "jammed") else ""
                 self.event(f"lock: {p['lock']} -> {cur['lock']}{extra}", "lock")
-            if cur["connected"] != p["connected"]:
-                which = cur["link"] if cur["connected"] else p["link"]
-                self.event(f"phone {'connected' if cur['connected'] else 'disconnected'} ({which or 'unknown'})", "phone")
-            if cur["zone"] != p["zone"] and cur["zone"] != "gone":
-                rssi = f"rssi {s.rssi:.0f} dBm" if s.rssi > -127 else "no rssi yet"
-                self.event(f"zone: {p['zone']} -> {cur['zone']} ({rssi})", "phone")
-            if cur["auth"] != p["auth"]:
-                self.event("authenticated" if cur["auth"] else "session ended", "auth")
-            if cur["arrival"] != p["arrival"]:
-                self.event("ARRIVAL detected: armed for 30 s" if cur["arrival"] else "arrival window closed", "arm")
+            for i, name in enumerate(("real phone", "sim phone")):
+                link = s.links[i]
+                (u0, a0, z0, arm0, door0, _), (u1, a1, z1, arm1, door1, ok1) = p[name], cur[name]
+                if u1 != u0:
+                    self.event(f"{name} {'connected' if u1 else 'disconnected'}", "phone")
+                if z1 != z0 and z1 != "gone":
+                    rssi = f"rssi {link.rssi:.0f} dBm" if link.rssi > -127 else "no rssi yet"
+                    self.event(f"{name} zone: {z0} -> {z1} ({rssi})", "phone")
+                if a1 != a0 and u1:
+                    self.event(f"{name} {'logged in' if a1 else 'login ended'}", "auth")
+                if arm1 != arm0:
+                    self.event(f"{name} ARMED: genuine arrival (home context: {context_text(link)})"
+                               if arm1 else f"{name} disarmed", "arm")
+                if door1 != door0:
+                    self.event(f"{name} {'AT THE DOOR: unlock window open' if door1 else 'unlock window closed'}"
+                               + ("" if ok1 or not door1 else " (but home context refuses)"), "arm")
             if cur["auto"] != p["auto"]:
                 self.event("AUTO-UNLOCK triggered by the policy", "auto")
         if cur != p and self.ble is not None:
@@ -317,66 +366,73 @@ class Twin:
                 continue
             last += ms / 1000
             self.core.advance(min(ms, 200))
-            self._renew_login()
+            self._renew_logins()
             if now - last_rssi >= 0.2:  # phones report RSSI a few times a second
                 last_rssi = now
-                if self.link == "sim" and self.sim_rssi is not None:
-                    self.core.rssi(self.sim_rssi)
-                elif self.link == "ble" and self.ble_rssi_override is not None:
-                    self.core.rssi(self.ble_rssi_override)
+                if self.sim_connected and self.sim_rssi is not None:
+                    self.core.rssi(SIM, self.sim_rssi)
+                if self.ble_connected and self.ble_rssi_override is not None:
+                    self.core.rssi(BLE, self.ble_rssi_override)
             self._watch()
 
-    def _renew_login(self) -> None:
-        """The lock issued a fresh challenge because the login expired on a live connection."""
-        nonce = self.core.take_new_challenge()
-        if nonce is None:
-            return
-        self.event("login expired on a live connection: lock issued a new challenge", "auth")
-        if self.link == "ble" and self.ble is not None:
-            self.ble.publish_challenge(nonce)
-        elif self.link == "sim":
-            self._sim_answer(nonce)
+    def _renew_logins(self) -> None:
+        """The lock issued a fresh challenge (login expired, or Rechallenge) on a live connection."""
+        for conn in (BLE, SIM):
+            nonce = self.core.take_new_challenge(conn)
+            if nonce is None:
+                continue
+            if conn == BLE and self.ble is not None:
+                self.ble.publish_challenge(nonce)
+            elif conn == SIM:
+                self._sim_answer(nonce, quiet=True)
 
     # ---- simulated phone
-    def _sim_answer(self, nonce: bytes) -> None:
-        msg = b"SLK1" + self.lock_id + nonce
-        r = self.core.auth(bytes([self.sim_key_id]) + p256_sign(self.sim_key, msg))
-        self.event(f"sim phone signed the challenge with its P-256 key: {AUTH_RESULTS[r]}", "auth")
+    def _sim_answer(self, nonce: bytes, quiet: bool = False) -> None:
+        ctx = SIM_CONTEXTS[self.sim_ctx_name]
+        r = self.core.auth(SIM, login_response(self.sim_key, self.sim_key_id, self.lock_id, nonce, ctx))
+        if not quiet or r != 0:
+            self.event(f"sim phone signed the challenge ({'v1, no context' if ctx is None else 'v2 + home context'}):"
+                       f" {AUTH_RESULTS[r]}", "auth")
 
-    def sim_connect(self, authenticate: bool = True) -> str:
-        if self.link == "ble":
-            return "a real phone is connected over Bluetooth; disconnect it first"
-        if self.link == "sim":
+    def sim_connect(self) -> str:
+        if self.sim_connected:
             return "simulated phone already connected"
-        self.link = "sim"
-        nonce = self.core.connect()
+        nonce = self.core.connect(SIM)
+        if nonce is None:
+            return "lock has no free connection"
+        self.sim_connected = True
         if self.sim_rssi is None:
             self.sim_rssi = -90
-        if authenticate:
-            self._sim_answer(nonce)
+        self._sim_answer(nonce)
         return "ok"
 
     def sim_disconnect(self) -> str:
-        if self.link != "sim":
+        if not self.sim_connected:
             return "simulated phone is not connected"
-        self.core.disconnect()
-        self.link = None
+        self.core.disconnect(SIM)
+        self.sim_connected = False
         return "ok"
 
     def sim_command(self, data: bytes, label: str) -> str:
-        if self.link != "sim":
+        if not self.sim_connected:
             return "connect the simulated phone first"
-        r = CMD_RESULTS[self.core.command(data)]
-        self.event(f"phone command {label}: {r}", "phone")
+        r = CMD_RESULTS[self.core.command(SIM, data)]
+        self.event(f"sim phone command {label}: {r}", "phone")
         return r
 
-    # ---- scenarios
+    # ---- scenarios (they drive the simulated phone; the real phone keeps doing its own thing)
     def start_scenario(self, name: str, coro) -> str:
         if self.scenario and not self.scenario.done():
             self.scenario.cancel()
         self.scenario_name = name
-        self.scenario = asyncio.create_task(coro)
+        self.scenario = asyncio.create_task(self._guard(coro))
         return "ok"
+
+    async def _guard(self, coro) -> None:
+        try:
+            await coro
+        finally:
+            self.scenario_name = ""
 
     async def _ramp(self, start: int, end: int, seconds: float) -> None:
         steps = max(1, int(seconds / 0.2))
@@ -384,36 +440,73 @@ class Twin:
             self.sim_rssi = round(start + (end - start) * i / steps)
             await asyncio.sleep(0.2)
 
-    async def scenario_arrive(self) -> None:
-        self.event("SCENARIO arrive home: phone away > 1 min, then walks up to the door", "scenario")
-        if self.link == "sim":
+    async def _be_away(self) -> None:
+        """The sim phone must be gone longer than the arrival rule needs."""
+        if self.sim_connected:
             self.sim_disconnect()
-        self.core.advance(61000)  # fast-forward: the phone was away for over a minute
+        away_ms = self.core.state().min_away_ms + 1000
+        if self.ble_connected:  # don't fast-forward under a real phone: it would see time jump
+            self.event(f"sim phone away for {away_ms / 1000:.0f} s (real time, a real phone is connected)", "scenario")
+            await asyncio.sleep(away_ms / 1000)
+        else:
+            self.core.advance(away_ms)
+            self.event(f"sim phone was away {away_ms / 1000:.0f} s (fast-forwarded)", "scenario")
+
+    async def scenario_arrive(self) -> None:
+        self.event("SCENARIO arrive home: phone was away, enters the home geofence, walks to the door", "scenario")
+        await self._be_away()
+        self.sim_ctx_name = "just_home"
         self.sim_rssi = -95
         self.sim_connect()
-        await self._ramp(-95, -58, 6.0)
-        s = self.core.state()
-        if MODES[s.mode] == "approach+intent":
-            self.event("at the door: press 'Touch handle' to unlock (mode needs intent)", "scenario")
-        self.scenario_name = ""
+        await self._ramp(-95, -88, 3.0)  # lobby / elevator: armed, but nowhere near the door yet
+        await self._ramp(-88, -58, 5.0)
+        if MODES[self.core.state().mode] == "approach+intent":
+            self.event("at the door: press 'Touch handle' within 30 s", "scenario")
 
-    async def scenario_leave(self) -> None:
-        self.event("SCENARIO leave: walk away until the connection drops", "scenario")
-        if self.link != "sim":
-            self.sim_connect()
-        await self._ramp(self.sim_rssi or -60, -97, 5.0)
-        self.sim_disconnect()
-        self.scenario_name = ""
+    async def scenario_walk_past(self) -> None:
+        self.event("SCENARIO walk past: arrive, pass the door, go down the hall", "scenario")
+        await self._be_away()
+        self.sim_ctx_name = "just_home"
+        self.sim_rssi = -95
+        self.sim_connect()
+        await self._ramp(-95, -58, 5.0)
+        await asyncio.sleep(1.0)
+        await self._ramp(-58, -74, 2.0)
+        self.event("phone is now Near, past the door. Someone touches the handle...", "scenario")
+        await asyncio.sleep(1.0)
+        self.core.intent()
+        await asyncio.sleep(2.5)
+        self.event(f"result: lock is {LOCK_STATES[self.core.state().lock_state]} (expected: locked)", "scenario")
+
+    async def scenario_relay(self) -> None:
+        self.event("SCENARIO relay attack: your phone is at the mall; attackers relay it to the door", "scenario")
+        await self._be_away()
+        self.sim_ctx_name = "not_home"  # your phone knows it isn't home, and signs that
+        self.sim_rssi = -50             # the relay at the door looks very close
+        self.sim_connect()
+        await asyncio.sleep(1.5)
+        self.event("attacker touches the handle...", "scenario")
+        self.core.intent()
+        await asyncio.sleep(2.5)
+        self.event(f"result: lock is {LOCK_STATES[self.core.state().lock_state]} (expected: locked; "
+                   f"without home context it would have opened)", "scenario")
 
     async def scenario_inside(self) -> None:
-        self.event("SCENARIO phone inside: phone stays by the door, never away", "scenario")
-        if self.link == "sim":
+        self.event("SCENARIO phone inside: never left, home for hours", "scenario")
+        self.sim_ctx_name = "home_hours"
+        if self.sim_connected:
             self.sim_disconnect()
-            await asyncio.sleep(0.5)  # brief drop, nowhere near a minute
+            await asyncio.sleep(0.5)  # brief drop, nowhere near the away time
         self.sim_rssi = -50
         self.sim_connect()
         self.event("try 'Touch handle' now: it must NOT unlock", "scenario")
-        self.scenario_name = ""
+
+    async def scenario_leave(self) -> None:
+        self.event("SCENARIO leave: walk away until the connection drops", "scenario")
+        if not self.sim_connected:
+            self.sim_connect()
+        await self._ramp(self.sim_rssi or -60, -97, 5.0)
+        self.sim_disconnect()
 
     # ---- actions from the web page (run on the event loop thread)
     def action(self, name: str, value) -> str:
@@ -425,21 +518,27 @@ class Twin:
         if name == "sim_rssi":
             self.sim_rssi = int(value)
             return "ok"
+        if name == "sim_ctx":
+            if value not in SIM_CONTEXTS:
+                return "unknown context"
+            self.sim_ctx_name = value
+            if self.sim_connected:  # re-send it like the app does: ask for a fresh challenge
+                self.sim_command(bytes([0x07]), "rechallenge")
+            return "ok"
         if name == "ble_rssi":
             self.ble_rssi_override = None if value is None else int(value)
             return "ok"
         if name == "scenario":
-            if self.link == "ble":
-                return "scenarios drive the simulated phone: disconnect your real phone first (or just walk!)"
-            fn = {"arrive": self.scenario_arrive, "leave": self.scenario_leave, "inside": self.scenario_inside}[value]
-            return self.start_scenario(value, fn())
+            fn = {"arrive": self.scenario_arrive, "walk_past": self.scenario_walk_past,
+                  "relay": self.scenario_relay, "inside": self.scenario_inside,
+                  "leave": self.scenario_leave}.get(value)
+            return self.start_scenario(value, fn()) if fn else "unknown scenario"
         if name == "intent":
             c.intent()
             self.event("someone touched / turned the door handle (intent)", "intent")
             return "ok"
         if name == "cmd":
-            ops = {"unlock": b"\x01", "lock": b"\x02"}
-            return self.sim_command(ops[value], value)
+            return self.sim_command({"unlock": b"\x01", "lock": b"\x02"}[value], value)
         if name == "calibrate":
             self.event("installer: calibrate (bolt must be locked)")
             return REQUEST_RESULTS[c.calibrate()]
@@ -459,26 +558,35 @@ class Twin:
             self.event(f"door {'closed' if value else 'opened'}", "world")
             return "ok"
         if name == "mode":
-            c.set_mode(int(value))
+            if not c.set_mode(int(value)):
+                return "approach-only needs a door sensor and auto-relock: set auto-relock first"
             self.event(f"mode set to {MODES[int(value)]}")
             return "ok"
         if name == "relock":
+            if int(value) == 0 and MODES[c.state().mode] == "approach-only":
+                return "approach-only needs auto-relock: switch the mode first"
             c.set_relock(int(value) * 1000)
             self.event(f"auto-relock {'off' if int(value) == 0 else f'after {int(value)} s with the door closed'}")
             return "ok"
         if name == "min_away":
             c.set_min_away(int(value) * 1000)
-            self.event(f"a reconnect now counts as an arrival after {int(value)} s away")
+            self.event(f"a login now counts as an arrival after {int(value)} s away")
+            return "ok"
+        if name == "require_ctx":
+            c.set_require_context(bool(value))
+            self.event(f"home context {'REQUIRED' if value else 'optional'} for auto-unlock")
             return "ok"
         if name == "skip":
+            if self.ble_connected:
+                return "not while a real phone is connected (it would see time jump)"
             c.advance(int(value))
             self.event(f"fast-forwarded {int(value) / 1000:.0f} s")
             return "ok"
         if name == "power_cycle":
-            if self.link == "sim":
-                self.link = None
+            self.sim_connected = False
+            self.ble_connected = False
             c.power_cycle()
-            self.event("POWER CYCLE: encoder count lost, calibration kept (as if in flash)", "world")
+            self.event("POWER CYCLE: encoder count and connections lost, calibration kept (as if in flash)", "world")
             return "ok"
         if name == "enroll_window":
             c.open_enrollment(60000)
@@ -488,13 +596,18 @@ class Twin:
 
     def snapshot(self) -> dict:
         s = self.core.state()
-        d = {f[0]: getattr(s, f[0]) for f in TwinState._fields_}
+        d = {f[0]: getattr(s, f[0]) for f in TwinState._fields_ if f[0] != "links"}
+        phones = {}
+        for key, link in (("ble", s.links[0]), ("sim", s.links[1])):
+            phones[key] = {f[0]: getattr(link, f[0]) for f in TwinLink._fields_}
+            phones[key].update({"zone_name": ZONES[link.zone], "context_text": context_text(link),
+                                "last_auth_name": AUTH_RESULTS[link.last_auth] if link.used else "",
+                                "last_cmd_name": CMD_RESULTS[link.last_cmd] if link.used else ""})
         d.update({
             "lock_state_name": LOCK_STATES[s.lock_state], "drive_status_name": DRIVE_STATUS[s.drive_status],
-            "zone_name": ZONES[s.zone], "mode_name": MODES[s.mode], "last_cmd_name": CMD_RESULTS[s.last_cmd],
-            "last_auth_name": AUTH_RESULTS[s.last_auth], "link": self.link, "sim_rssi": self.sim_rssi,
-            "ble_rssi_override": self.ble_rssi_override, "ble_status": self.ble_status,
-            "scenario": self.scenario_name, "log": list(self.log)[-80:],
+            "mode_name": MODES[s.mode], "phones": phones, "sim_rssi": self.sim_rssi,
+            "sim_ctx": self.sim_ctx_name, "ble_rssi_override": self.ble_rssi_override,
+            "ble_status": self.ble_status, "scenario": self.scenario_name, "log": list(self.log)[-80:],
         })
         return d
 
@@ -502,14 +615,13 @@ class Twin:
 # --------------------------------------------------------------------------- Bluetooth GATT server
 
 class BleServer:
-    """Windows GATT server exposing the lock's service. Optional: the twin runs without it."""
+    """Windows GATT server exposing the lock's service on connection BLE. Optional."""
 
     def __init__(self, twin: Twin) -> None:
         self.twin = twin
         self.chars: dict = {}
         self.provider = None
         self.nonce = bytes(16)
-        self.sessions: set[str] = set()
 
     def _set_status(self, text: str) -> None:
         if text != self.twin.ble_status:
@@ -588,20 +700,20 @@ class BleServer:
 
     def _clients_changed(self) -> None:
         n = self._connected_count()
-        if n > 0 and self.twin.link != "ble":
+        if n > 0 and not self.twin.ble_connected:
             self._ble_connect()
-        elif n == 0 and self.twin.link == "ble":
-            self.twin.core.disconnect()
-            self.twin.link = None
+        elif n == 0 and self.twin.ble_connected:
+            self.twin.core.disconnect(BLE)
+            self.twin.ble_connected = False
         self.notify_status()
 
     def _ble_connect(self) -> None:
-        if self.twin.link == "sim":
-            self.twin.sim_disconnect()
-            self.twin.event("simulated phone dropped: a real phone connected", "phone")
-        self.twin.link = "ble"
-        self.nonce = self.twin.core.connect()
-        self._notify("challenge", self._challenge_value())
+        nonce = self.twin.core.connect(BLE)
+        if nonce is None:
+            self.twin.event("real phone refused: lock has no free connection", "ble")
+            return
+        self.twin.ble_connected = True
+        self.publish_challenge(nonce)
 
     def _challenge_value(self) -> bytes:
         return self.twin.lock_id + self.nonce  # lock_id (8) | nonce (16), see protocol.h
@@ -616,9 +728,9 @@ class BleServer:
         async def respond():
             try:
                 req = await args.get_request_async()
-                if self.twin.link != "ble":
+                if not self.twin.ble_connected:
                     self._ble_connect()
-                value = self._challenge_value() if name == "challenge" else self.twin.core.status_packet()
+                value = self._challenge_value() if name == "challenge" else self.twin.core.status_packet(BLE)
                 req.respond_with_value(self._buffer(value))
             finally:
                 deferral.complete()
@@ -632,14 +744,15 @@ class BleServer:
             try:
                 req = await args.get_request_async()
                 data = bytes(memoryview(req.value))
-                if self.twin.link != "ble":
+                if not self.twin.ble_connected:
                     self._ble_connect()
                 core = self.twin.core
                 if name == "response":
-                    r = AUTH_RESULTS[core.auth(data)]
-                    self.twin.event(f"real phone answered the challenge: {r}", "auth")
+                    r = AUTH_RESULTS[core.auth(BLE, data)]
+                    kind = "v2 + home context" if len(data) == 67 else "v1, no context"
+                    self.twin.event(f"real phone answered the challenge ({kind}): {r}", "auth")
                 elif name == "command":
-                    r = CMD_RESULTS[core.command(data)]
+                    r = CMD_RESULTS[core.command(BLE, data)]
                     self.twin.event(f"real phone command 0x{data[:1].hex()}: {r}", "phone")
                 elif name == "enroll":
                     kid = core.enroll(data)
@@ -650,7 +763,7 @@ class BleServer:
                         self.twin.event("enrolment refused (window closed, store full, or bad key)", "auth")
                 elif name == "telemetry" and data:
                     if self.twin.ble_rssi_override is None:
-                        core.rssi(int.from_bytes(data[:1], "little", signed=True))
+                        core.rssi(BLE, int.from_bytes(data[:1], "little", signed=True))
                 if req.option == self.gap.GattWriteOption.WRITE_WITH_RESPONSE:
                     req.respond()
                 self.notify_status()
@@ -679,8 +792,8 @@ class BleServer:
         asyncio.ensure_future(go())
 
     def notify_status(self) -> None:
-        if self.chars:
-            self._notify("status", self.twin.core.status_packet())
+        if self.chars and self.twin.ble_connected:
+            self._notify("status", self.twin.core.status_packet(BLE))
 
 
 # --------------------------------------------------------------------------- web server
@@ -734,7 +847,7 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-ble", action="store_true", help="don't start the Bluetooth GATT server")
     ap.add_argument("--away", type=int, default=None, metavar="SECONDS",
-                    help="seconds a phone must be gone for a reconnect to count as an arrival (default 60)")
+                    help="seconds a phone must be gone for its next login to count as an arrival (default 60)")
     args = ap.parse_args()
 
     twin = Twin(use_ble=not args.no_ble, min_away_s=args.away)

@@ -7,7 +7,8 @@
 // Service      17d50001  advertised (iOS background scanning needs a fixed service UUID)
 //  Challenge   17d50002  read, notify   lock_id (8) | nonce (16); nonce is new on every connection.
 //                                       The phone signs "SLK1" | lock_id | nonce.
-//  Response    17d50003  write          key_id (1) | signature (64)
+//  Response    17d50003  write          v1: key_id (1) | signature (64)
+//                                       v2: key_id (1) | home context (2) | signature (64)  (session.h)
 //  Command     17d50004  write          opcode (1) | args; only accepted once authenticated
 //  Status      17d50005  read, notify   StatusPacket
 //  Enroll      17d50006  write          64-byte public key; only while the enrolment window is open.
@@ -33,8 +34,10 @@ enum class Opcode : uint8_t {
   Unlock = 0x01,
   Lock = 0x02,
   Calibrate = 0x03,
-  SetMode = 0x04,     // arg: 0 = ApproachOnly, 1 = ApproachAndIntent
+  SetMode = 0x04,     // arg: 0 = ApproachOnly (needs a door sensor + auto-relock), 1 = ApproachAndIntent
   SetRelock = 0x05,   // arg: uint16 seconds, 0 = off
+  RevokeKey = 0x06,   // arg: key id. Any enrolled phone may revoke any key, including its own.
+  Rechallenge = 0x07, // ask for a fresh challenge, e.g. to re-send updated home context
 };
 
 #pragma pack(push, 1)
@@ -49,7 +52,8 @@ struct StatusPacket {
   uint8_t last_cmd_result = 0;   // slock::CmdResult of the last Command write
   uint8_t last_auth_result = 0;  // slock::AuthResult of the last Response write
   uint8_t zone = 0;              // slock::Zone
-  uint8_t flags = 0;             // bit0 = arrival window active, bit1 = enrolment window open
+  uint8_t flags = 0;             // bit0 = this phone is armed (arrival), bit1 = enrolment window open,
+                                 // bit2 = at the door (unlock window open), bit3 = home context accepted
   int8_t last_enrolled_id = -1;  // key id from the last Enroll write, -1 = refused / none
 };
 static_assert(sizeof(StatusPacket) == 13, "StatusPacket is a wire format");
