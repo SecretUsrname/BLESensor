@@ -49,6 +49,7 @@ void App::begin(Millis now) {
   if (storage_ != nullptr) {
     KeyStore loaded;
     if (storage_->load(kStoreKeys, &loaded, sizeof(loaded))) keys_ = loaded;
+    else if (keys_.count() > 0) save_keys();  // first boot with keys provisioned in code
     Settings s;
     if (storage_->load(kStoreSettings, &s, sizeof(s)) && s.version == 1) {
       cfg_.strict = s.strict != 0;
@@ -323,6 +324,11 @@ size_t App::log_page(uint16_t conn, uint8_t* out, size_t cap) {
 void App::on_intent(Millis now) {
   intent_pending_ = true;
   intent_at_ = now;
+  // The decision needs current steps and home state: ask phones at the door to re-sign now. They
+  // answer well within intent_hold_ms.
+  for (Link& l : links_) {
+    if (l.used && l.zones.at_door()) refresh(l, now);
+  }
 }
 
 void App::door_closed(Millis at, bool trusted, Millis now) {

@@ -22,7 +22,9 @@ jobs:
           bash firmware/run_tests.sh > test-output.txt 2>&1
           status=$?
           cat test-output.txt
-          grep -E "error:|FAIL|tests, " test-output.txt | head -40 | sed 's/%/%25/g; s/^/::error::/'
+          # One annotation holding every line (GitHub shows at most 10 annotations per step).
+          msg=$(grep -E "error:|FAIL|tests, " test-output.txt | head -80 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          [ -n "$msg" ] && echo "::error title=Host tests::$msg"
           exit $status
 
   board-build:

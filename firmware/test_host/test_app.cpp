@@ -443,7 +443,9 @@ TEST(v1_relay_while_home) {
   r.open_door();
   r.a.pos = Pos::InsideLock;
   r.close_door(true);
-  r.a.pos = Pos::Bedroom;
+  r.a.pos = Pos::InsideRoom;  // walks through the flat...
+  r.run(5000);
+  r.a.pos = Pos::Bedroom;  // ...to bed
   r.run(20000);
   CHECK(r.side(r.a) == Side::Inside);
   r.a.pos = Pos::OutsideDoor;  // relayed signal
@@ -673,7 +675,8 @@ TEST(v1_event_log_pages) {
   CHECK(first.seq == 1);
   CHECK(first.type == static_cast<uint8_t>(EventType::Boot));
   // Keep reading until empty; the last event is the auto-unlock.
-  Event last = first;
+  Event last;
+  std::memcpy(&last, page + 1 + (page[0] - 1) * sizeof(Event), sizeof(Event));
   for (int guard = 0; guard < 20; ++guard) {
     size_t m = r.app.log_page(1, page, sizeof(page));
     if (page[0] == 0) break;

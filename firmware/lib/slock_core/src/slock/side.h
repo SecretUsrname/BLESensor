@@ -39,7 +39,7 @@ struct SideConfig {
   uint32_t pre_ms = 1500;          // signal averaged over this long before the close moment...
   uint32_t pre_gap_ms = 150;       // ...stopping this long before it
   uint32_t post_from_ms = 300;     // signal after the close, from here...
-  uint32_t post_to_ms = 2500;      // ...to here
+  uint32_t post_to_ms = 1500;      // ...to here (short: the door blocks the instant it shuts)
   uint32_t follow_ms = 15000;      // decide at the latest this long after the close
   uint8_t min_follow_samples = 5;
   uint32_t diary_margin_ms = 120000;  // geofence lag allowance around exit/entry times
