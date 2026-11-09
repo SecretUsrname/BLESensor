@@ -93,7 +93,7 @@ class TwinState(ctypes.Structure):
         ("rssi", ctypes.c_float), ("jam_at", ctypes.c_float), ("motor_duty", ctypes.c_float),
         ("encoder", ctypes.c_int32), ("park_position", ctypes.c_int32),
         ("arrival_ms_left", ctypes.c_uint32), ("auto_unlocks", ctypes.c_uint32),
-        ("changes", ctypes.c_uint32), ("auto_relock_ms", ctypes.c_uint32),
+        ("changes", ctypes.c_uint32), ("auto_relock_ms", ctypes.c_uint32), ("min_away_ms", ctypes.c_uint32),
         ("battery_mv", ctypes.c_uint16), ("lock_state", ctypes.c_uint8), ("drive_status", ctypes.c_uint8),
         ("zone", ctypes.c_uint8), ("connected", ctypes.c_uint8), ("authenticated", ctypes.c_uint8),
         ("mode", ctypes.c_uint8), ("door_closed", ctypes.c_uint8), ("calibrated", ctypes.c_uint8),
@@ -193,6 +193,9 @@ class Core:
     def set_relock(self, ms: int) -> None:
         self._call("twin_set_relock", ctypes.c_uint32(ms))
 
+    def set_min_away(self, ms: int) -> None:
+        self._call("twin_set_min_away", ctypes.c_uint32(ms))
+
     def turn_by_hand(self, bolt: float) -> bool:
         return bool(self._call("twin_turn_by_hand", ctypes.c_float(bolt)))
 
@@ -227,8 +230,9 @@ def load_cad_params() -> dict:
 # --------------------------------------------------------------------------- the twin
 
 class Twin:
-    def __init__(self, use_ble: bool) -> None:
+    def __init__(self, use_ble: bool, min_away_s: int | None = None) -> None:
         self.core = Core()
+        self.min_away_s = min_away_s
         self.loop: asyncio.AbstractEventLoop | None = None
         self.log: deque[dict] = deque(maxlen=300)
         self.link: str | None = None          # None, "sim" or "ble"
@@ -298,6 +302,9 @@ class Twin:
         self.loop = asyncio.get_running_loop()
         self.event("twin started: calibrating the simulated lock (bolt starts locked)")
         self.core.calibrate()
+        if self.min_away_s is not None:
+            self.core.set_min_away(self.min_away_s * 1000)
+            self.event(f"testing setting: arrival after {self.min_away_s} s away")
         if self.ble is not None:
             asyncio.create_task(self.ble.run())
         last = time.perf_counter()
@@ -458,6 +465,10 @@ class Twin:
         if name == "relock":
             c.set_relock(int(value) * 1000)
             self.event(f"auto-relock {'off' if int(value) == 0 else f'after {int(value)} s with the door closed'}")
+            return "ok"
+        if name == "min_away":
+            c.set_min_away(int(value) * 1000)
+            self.event(f"a reconnect now counts as an arrival after {int(value)} s away")
             return "ok"
         if name == "skip":
             c.advance(int(value))
@@ -722,9 +733,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="SLock digital twin")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-ble", action="store_true", help="don't start the Bluetooth GATT server")
+    ap.add_argument("--away", type=int, default=None, metavar="SECONDS",
+                    help="seconds a phone must be gone for a reconnect to count as an arrival (default 60)")
     args = ap.parse_args()
 
-    twin = Twin(use_ble=not args.no_ble)
+    twin = Twin(use_ble=not args.no_ble, min_away_s=args.away)
     cad = load_cad_params()
 
     async def amain():

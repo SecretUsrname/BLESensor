@@ -24,6 +24,19 @@ TEST(arrival_needs_a_real_absence) {
   CHECK(!t.arrival_active(100000 + 30000));  // window over
 }
 
+TEST(away_time_is_adjustable) {
+  PresenceConfig cfg;
+  PresenceTracker t(cfg);
+  t.begin(0);
+  t.set_min_away_ms(10000);
+  CHECK(t.min_away_ms() == 10000);
+  t.on_connect(9999);
+  CHECK(!t.arrival_active(9999));  // 9.999 s since boot: not long enough
+  t.on_disconnect(20000);
+  t.on_connect(30000);  // away exactly 10 s
+  CHECK(t.arrival_active(30000));
+}
+
 TEST(phone_sitting_inside_never_arms) {
   PresenceConfig cfg;
   PresenceTracker t(cfg);

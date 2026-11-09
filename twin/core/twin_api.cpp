@@ -58,6 +58,7 @@ struct Twin {
   Calibration saved_cal;
   UnlockMode mode = UnlockMode::ApproachAndIntent;
   uint32_t relock_ms = 0;
+  uint32_t min_away_ms = PresenceConfig{}.min_away_ms;
 
   std::unique_ptr<DriveController> drive;
   std::unique_ptr<LockController> lock;
@@ -81,7 +82,9 @@ struct Twin {
     lc.auto_relock_ms = relock_ms;
     lock.reset(new LockController(*drive, battery, &door, lc));
     session.reset(new Session(keys, verifier, rng, kLockId, SessionConfig{}));
-    presence.reset(new PresenceTracker(PresenceConfig{}));
+    PresenceConfig pc;
+    pc.min_away_ms = min_away_ms;
+    presence.reset(new PresenceTracker(pc));
     AppConfig ac;
     ac.mode = mode;
     app.reset(new App(*lock, *session, *presence, keys, battery, ac));
@@ -121,6 +124,7 @@ struct TwinState {
   uint32_t auto_unlocks;
   uint32_t changes;
   uint32_t auto_relock_ms;
+  uint32_t min_away_ms;
   uint16_t battery_mv;
   uint8_t lock_state;
   uint8_t drive_status;
@@ -170,6 +174,7 @@ TWIN_API void twin_get_state(void* h, TwinState* s) {
   s->auto_unlocks = t->app->auto_unlocks();
   s->changes = t->lock->change_count();
   s->auto_relock_ms = t->lock->auto_relock_ms();
+  s->min_away_ms = t->presence->min_away_ms();
   s->battery_mv = t->battery.mv;
   s->lock_state = static_cast<uint8_t>(t->lock->state());
   s->drive_status = static_cast<uint8_t>(t->lock->last_drive_status());
@@ -228,6 +233,10 @@ TWIN_API void twin_set_mode(void* h, int mode) {
   T(h)->app->set_mode(mode == 0 ? UnlockMode::ApproachOnly : UnlockMode::ApproachAndIntent);
 }
 TWIN_API void twin_set_relock(void* h, uint32_t ms) { T(h)->lock->set_auto_relock_ms(ms); }
+TWIN_API void twin_set_min_away(void* h, uint32_t ms) {
+  T(h)->min_away_ms = ms;  // survives power cycles in the twin
+  T(h)->presence->set_min_away_ms(ms);
+}
 
 // ---- the world
 TWIN_API int twin_turn_by_hand(void* h, float bolt) { return T(h)->plant.turn_by_hand(bolt) ? 1 : 0; }

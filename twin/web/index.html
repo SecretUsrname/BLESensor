@@ -181,6 +181,12 @@
         </select>
       </div>
       <div class="row">
+        <span class="label">arrival after away</span>
+        <select id="minaway" onchange="api('min_away', +this.value)">
+          <option value="10">10 s (testing)</option><option value="30">30 s</option><option value="60">60 s (default)</option>
+        </select>
+      </div>
+      <div class="row">
         <button onclick="api('calibrate')">Calibrate</button>
         <button onclick="api('power_cycle')">Power cycle</button>
         <button onclick="api('skip', 60000)">Skip 60 s</button>
@@ -317,6 +323,7 @@ function render(s) {
   if (document.activeElement !== $('#batt')) $('#batt').value = s.battery_mv;
   if (document.activeElement !== $('#mode')) $('#mode').value = s.mode;
   if (document.activeElement !== $('#relock')) $('#relock').value = String(s.auto_relock_ms / 1000);
+  if (document.activeElement !== $('#minaway')) $('#minaway').value = String(s.min_away_ms / 1000);
   $('#cal').textContent = `${s.calibrated ? 'yes' : 'no'} / ${s.homed ? 'yes' : 'no'}`;
   $('#keys').textContent = s.key_count + (s.enroll_open ? ' · enrolment OPEN' : '');
   $('#ble').textContent = s.ble_status;

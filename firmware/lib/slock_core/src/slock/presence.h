@@ -34,6 +34,11 @@ class PresenceTracker {
   bool arrival_active(Millis now) const;
   uint32_t arrival_remaining_ms(Millis now) const;
   bool connected() const { return connected_; }
+
+  // How long the phone must have been disconnected for a reconnect to count as an arrival.
+  // 60 s by default; shorter values make testing quicker but let brief dropouts at home count.
+  void set_min_away_ms(uint32_t ms) { cfg_.min_away_ms = ms; }
+  uint32_t min_away_ms() const { return cfg_.min_away_ms; }
   void consume_arrival() { arrival_ = false; }  // after an unlock, so it fires once per arrival
 
  private:
