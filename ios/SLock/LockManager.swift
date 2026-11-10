@@ -69,8 +69,7 @@ final class LockManager: NSObject, ObservableObject {
         _keyId = Published(initialValue: defaults.object(forKey: Keys.keyId) as? Int)
         _notifyInBackground = Published(initialValue: defaults.bool(forKey: Keys.notify))
         super.init()
-        let how = UIApplication.shared.applicationState == .background ? "in the background, by iOS" : "by you"
-        log.add("app process started (\(how))")
+        log.add("app process started")  // the launch reason follows (AppDelegate)
         HomeLocation.shared.onChange = { [weak self] in self?.homeContextChanged() }
         HomeLocation.shared.onLockBeacon = { [weak self] in self?.beaconWake() }
         let center = UNUserNotificationCenter.current()
@@ -464,10 +463,15 @@ extension LockManager: CBCentralManagerDelegate {
 
 extension LockManager: CBPeripheralDelegate {
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        if let error {
+            log.add("service discovery failed: \(error.localizedDescription)")
+            return
+        }
         guard let service = p.services?.first(where: { $0.uuid == SLockGATT.service }) else {
             log.add("the lock's service wasn't found")
             return
         }
+        log.add("found the lock's service")
         p.discoverCharacteristics(nil, for: service)
     }
 
@@ -484,7 +488,12 @@ extension LockManager: CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        if let error {
+            log.add("characteristic discovery failed: \(error.localizedDescription)")
+            return
+        }
         for c in service.characteristics ?? [] { chars[c.uuid] = c }
+        log.add("found \(chars.count) characteristics; subscribing and reading the challenge")
         for uuid in [SLockGATT.challenge, SLockGATT.status] {
             if let c = chars[uuid] { p.setNotifyValue(true, for: c) }
         }
@@ -497,7 +506,11 @@ extension LockManager: CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
-        guard error == nil, let data = c.value else { return }
+        if let error {
+            log.add("read of \(c.uuid.uuidString.prefix(8)) failed: \(error.localizedDescription)")
+            return
+        }
+        guard let data = c.value else { return }
         if c.uuid == SLockGATT.challenge {
             handleChallenge(data)
         } else if c.uuid == SLockGATT.status {

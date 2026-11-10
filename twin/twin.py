@@ -40,6 +40,7 @@ ROOT = HERE.parent
 DLL_PATH = HERE / "build" / ("slock_twin.dll" if sys.platform == "win32" else "libslock_twin.so")
 PARAMS_SCAD = ROOT / "mech" / "params.scad"
 KEYS_FILE = HERE / "enrolled_keys.json"
+LOG_FILE = HERE / "twin.log"  # survives restarts (gitignored: *.log)
 
 BLE, SIM = 1, 2  # connection ids
 LOCK_STATES = ["uncalibrated", "calibrating", "homing", "needs-homing", "locked", "unlocked",
@@ -436,7 +437,13 @@ class Twin:
     def event(self, text: str, kind: str = "info") -> None:
         t = self.now()
         self.log.append({"t": t, "text": text, "kind": kind})
-        print(f"[{t / 1000:8.1f}s] {text}")
+        line = f"{time.strftime('%m-%d %H:%M:%S')} [{t / 1000:8.1f}s] {text}"
+        print(line, flush=True)
+        try:
+            with LOG_FILE.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
     def _watch(self) -> None:
         s = self.core.state()
@@ -466,8 +473,8 @@ class Twin:
             self._log_seq = seq + 1
             if typ == 1 and seq == 1:
                 continue
-            self.log.append({"t": t_ms, "text": "LOCK: " + event_text(seq, t_ms, typ, key, a, b),
-                             "kind": "auto" if typ in (2, 7) else ("bad" if typ in (8, 9, 10) else "lock")})
+            self.event("LOCK: " + event_text(seq, t_ms, typ, key, a, b),
+                       "auto" if typ in (2, 7) else ("bad" if typ in (8, 9, 10) else "lock"))
         if cur != p and self.ble is not None:
             self.ble.notify_status()
         self._prev = cur
@@ -489,6 +496,8 @@ class Twin:
             if ms <= 0:
                 continue
             last += ms / 1000
+            if ms > 1000:
+                self.event(f"WARNING: the twin's loop stalled for {ms / 1000:.1f} s (Bluetooth requests wait meanwhile)", "bad")
             self.core.advance(min(ms, 200))
             sim_ms = self.now()
             self.phone.tick(sim_ms)
@@ -1036,6 +1045,7 @@ class BleServer:
 
     def _clients_changed(self) -> None:
         n = self._connected_count()
+        self.twin.event(f"bluetooth: {n} notification subscription(s)", "ble")
         if n > 0 and not self.twin.ble_connected:
             self._ble_connect()
         elif n == 0 and self.twin.ble_connected:
@@ -1073,6 +1083,11 @@ class BleServer:
                 else:
                     value = self.twin.core.status_packet(BLE)
                 req.respond_with_value(self._buffer(value))
+                if name != "status":
+                    self.twin.event(f"real phone read {name} ({len(value)} bytes)", "ble")
+            except Exception as e:  # an unanswered request makes the phone drop the link after 30 s
+                self.twin.event(f"bluetooth: answering a read of {name} failed: {e!r}", "bad")
+                traceback.print_exc()
             finally:
                 deferral.complete()
 
@@ -1108,6 +1123,9 @@ class BleServer:
                 if req.option == self.gap.GattWriteOption.WRITE_WITH_RESPONSE:
                     req.respond()
                 self.notify_status()
+            except Exception as e:  # an unanswered request makes the phone drop the link after 30 s
+                self.twin.event(f"bluetooth: handling a write to {name} failed: {e!r}", "bad")
+                traceback.print_exc()
             finally:
                 deferral.complete()
 
